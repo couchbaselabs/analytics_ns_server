@@ -273,6 +273,7 @@ dynamic_children(normal) ->
              per_bucket_moxi_specs(Config),
              maybe_create_ssl_proxy_spec(Config),
              run_via_goport(fun fts_spec/1, Config),
+             run_via_goport(fun cbas_spec/1, Config),
              run_via_goport(fun example_service_spec/1, Config)],
 
     lists:flatten(Specs).
@@ -638,6 +639,45 @@ fts_spec(Config) ->
                     [use_stdio, exit_status, stderr_to_stdout, stream,
                      {log, ?FTS_LOG_FILENAME},
                      {env, build_go_env_vars(Config, fts)}]},
+            [Spec]
+    end.
+
+cbas_spec(Config) ->
+    CBASCmd = find_executable("cbas"),
+    NodeUUID = ns_config:search(Config, {node, node(), uuid}, false),
+    case CBASCmd =/= false andalso
+        NodeUUID =/= false andalso
+        ns_cluster_membership:should_run_service(Config, cbas, node()) of
+        false ->
+            [];
+        _ ->
+            NsRestPort = misc:node_rest_port(Config, node()),
+            CBASRestPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
+            {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
+            CBASDir = filename:join(IdxDir, "@cbas"),
+            ok = misc:ensure_writable_dir(CBASDir),
+            {_, Host} = misc:node_name_host(node()),
+            BindHttp = io_lib:format("~s:~b,0.0.0.0:~b", [Host, CBASRestPort, CBASRestPort]),
+            BindHttps = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
+                            undefined ->
+                                [];
+                            Port ->
+                                ["-bindHttps=:" ++ integer_to_list(Port),
+                                 "-tlsCertFile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
+                                 "-tlsKeyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
+                        end,
+            {ok, CBASMemoryQuota} = ns_storage_conf:get_memory_quota(Config, cbas),
+            Spec = {cbas, CBASCmd,
+                    [
+                     "-uuid=" ++ NodeUUID,
+                     "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
+                     "-bindHttp=" ++ BindHttp,
+                     "-dataDir=" ++ CBASDir,
+                     "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
+                    ] ++ BindHttps,
+                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                     {log, ?CBAS_LOG_FILENAME},
+                     {env, build_go_env_vars(Config, cbas)}]},
             [Spec]
     end.
 

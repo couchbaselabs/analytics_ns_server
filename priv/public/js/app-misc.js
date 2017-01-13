@@ -441,6 +441,7 @@ _.extend(ViewHelpers, {
         case 'moxi': return 'Moxi';
         case 'index': return 'Index';
         case 'fts': return 'Full Text';
+        case 'cbas': return 'Analytics';
       }
     }).sort();
   },

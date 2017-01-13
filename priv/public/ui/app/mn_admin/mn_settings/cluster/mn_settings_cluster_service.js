@@ -18,6 +18,7 @@
         memoryQuota: memoryQuotaConfig.memoryQuota === null ? "" : memoryQuotaConfig.memoryQuota,
         indexMemoryQuota: memoryQuotaConfig.indexMemoryQuota === null ? "" : memoryQuotaConfig.indexMemoryQuota,
         ftsMemoryQuota: memoryQuotaConfig.ftsMemoryQuota === null ? "" : memoryQuotaConfig.ftsMemoryQuota,
+        cbasMemoryQuota: memoryQuotaConfig.cbasMemoryQuota === null ? "" : memoryQuotaConfig.cbasMemoryQuota,
         clusterName: clusterName
       }
       var config = {

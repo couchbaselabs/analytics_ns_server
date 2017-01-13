@@ -2223,8 +2223,14 @@ validate_memory_quota(Config, CompatVersion, R0) ->
              false ->
                  R2
          end,
+    R4 = case cluster_compat_mode:is_version_45(CompatVersion) of
+             true ->
+                 validate_integer(cbasMemoryQuota, R3);
+             false ->
+                 R3
+         end,
 
-    Values = menelaus_util:get_values(R3),
+    Values = menelaus_util:get_values(R4),
 
     Quotas = lists:filtermap(
                fun ({Key, Service}) ->
@@ -2236,13 +2242,14 @@ validate_memory_quota(Config, CompatVersion, R0) ->
                        end
                end, [{memoryQuota, kv},
                      {indexMemoryQuota, index},
-                     {ftsMemoryQuota, fts}]),
+                     {ftsMemoryQuota, fts},
+                     {cbasMemoryQuota, cbas}]),
 
     case Quotas of
         [] ->
-            R3;
+            R4;
         _ ->
-            do_validate_memory_quota(Config, Quotas, R3)
+            do_validate_memory_quota(Config, Quotas, R4)
     end.
 
 do_validate_memory_quota(Config, Quotas, R0) ->
@@ -2278,7 +2285,9 @@ quota_error_msg({service_quota_too_low, Service, Quota, MinAllowed}) ->
             index ->
                 {indexMemoryQuota, ""};
             fts ->
-                {ftsMemoryQuota, ""}
+                {ftsMemoryQuota, ""};
+            cbas ->
+                {cbasMemoryQuota, ""}
         end,
 
     Msg = io_lib:format("The ~p service quota (~bMB) cannot be less than ~bMB~s.",
@@ -2341,9 +2350,10 @@ do_audit_cluster_settings(Req) ->
     {ok, KvQuota} = ns_storage_conf:get_memory_quota(kv),
     {ok, IndexQuota} = ns_storage_conf:get_memory_quota(index),
     {ok, FTSQuota} = ns_storage_conf:get_memory_quota(fts),
+    {ok, CBASQuota} = ns_storage_conf:get_memory_quota(cbas),
     ClusterName = get_cluster_name(),
 
-    ns_audit:cluster_settings(Req, KvQuota, IndexQuota, FTSQuota, ClusterName).
+    ns_audit:cluster_settings(Req, KvQuota, IndexQuota, FTSQuota, CBASQuota, ClusterName).
 
 handle_settings_web(Req) ->
     reply_json(Req, build_settings_web()).
@@ -2703,7 +2713,14 @@ build_memory_quota_info(Config) ->
         false ->
             Props1
     end,
-    Props2.
+    Props3 = case cluster_compat_mode:is_cluster_45() of
+        true ->
+            {ok, CBASQuota} = ns_storage_conf:get_memory_quota(Config, cbas),
+            [{cbasMemoryQuota, CBASQuota} | Props2];
+        false ->
+            Props2
+    end,
+    Props3.
 
 
 % S = [{ssd, []},
@@ -2841,10 +2858,12 @@ setup_services_check_quota(Services) ->
     {ok, KvQuota} = ns_storage_conf:get_memory_quota(kv),
     {ok, IndexQuota} = ns_storage_conf:get_memory_quota(index),
     {ok, FTSQuota} = ns_storage_conf:get_memory_quota(fts),
+    {ok, CBASQuota} = ns_storage_conf:get_memory_quota(cbas),
 
     Quotas = [{kv, KvQuota},
               {index, IndexQuota},
-              {fts, FTSQuota}],
+              {fts, FTSQuota},
+              {cbas, CBASQuota}],
 
     case ns_storage_conf:check_this_node_quotas(Services, Quotas) of
         ok ->

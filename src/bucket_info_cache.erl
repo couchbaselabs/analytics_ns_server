@@ -172,6 +172,14 @@ build_services(Node, Config, EnabledServices) ->
                          Port ->
                              [{ftsSSL, Port}]
                      end;
+             cbas ->
+                 [{cbas, ns_config:search(Config, {node, Node, cbas_http_port}, undefined)}] ++
+                     case ns_config:search(Config, {node, Node, cbas_ssl_port}, undefined) of
+                         undefined ->
+                             [];
+                         Port ->
+                             [{cbasSSL, Port}]
+                     end;
              example ->
                  []
          end || S <- EnabledServices],

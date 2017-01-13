@@ -50,7 +50,7 @@
 -type dcp_conn_name() :: nonempty_string().
 -type dcp_conn_type() :: consumer | producer | notifier.
 
--type service() :: kv | index | n1ql | fts | example.
+-type service() :: kv | index | n1ql | fts | cbas | example.
 
 -define(MULTICALL_DEFAULT_TIMEOUT, 30000).
 
@@ -81,6 +81,7 @@
 -define(INDEXER_LOG_FILENAME, "indexer.log").
 -define(METAKV_LOG_FILENAME, "metakv.log").
 -define(FTS_LOG_FILENAME, "fts.log").
+-define(CBAS_LOG_FILENAME, "cbas.log").
 
 -define(NS_SERVER_LOGGER, ns_server).
 -define(COUCHDB_LOGGER, couchdb).

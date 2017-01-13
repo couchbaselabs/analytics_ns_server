@@ -84,11 +84,36 @@
   </div>
 </div>
 
+<div
+   class="formrow"
+   ng-if="config.displayedServices.cbas">
+  <label for="cbas_ram_quota">Analytics RAM Quota</label>
+  <div class="form-inline">
+    <input
+       type="number"
+       id="cbas_ram_quota"
+       mn-focus="config.services.model.kv === false && config.services.model.index  === false"
+       ng-disabled="config.services && !config.services.model.cbas || (rbac && !rbac.cluster.pools.write)"
+         ng-model="config.cbasMemoryQuota">
+    <small>mb (min 256)</small>
+    <a
+       href=""
+       uib-tooltip="Main memory allocation amount for full text service per node.">What&#39;s this?</a>
+    </div>
+  <div
+     class="error"
+     ng-show="errors.cbasMemoryQuota">
+    {{errors.cbasMemoryQuota}}
+  </div>
+</div>
+
 <div ng-if="config.maxMemorySize">
   <label>Total Per Server:</label>
   <span>
       {{ ((!config.displayedServices.kv || (config.services && !config.services.model.kv)) ? 0 : config.memoryQuota) +
-       ((!config.displayedServices.index || (config.services && !config.services.model.index)) ? 0 : config.indexMemoryQuota) +
-      ((!config.displayedServices.fts || (config.services && !config.services.model.fts)) ? 0 : config.ftsMemoryQuota) }} mb (must be less than {{::config.maxMemorySize}} mb)
+         ((!config.displayedServices.index || (config.services && !config.services.model.index)) ? 0 : config.indexMemoryQuota) +
+         ((!config.displayedServices.fts || (config.services && !config.services.model.fts)) ? 0 : config.ftsMemoryQuota) +
+         ((!config.displayedServices.cbas || (config.services && !config.services.model.cbas)) ? 0 : config.cbasMemoryQuota) }}
+      mb (must be less than {{::config.maxMemorySize}} mb)
   </span>
 </div>

@@ -161,7 +161,7 @@
 
       $scope.$on("maybeShowMemoryQuotaDialog", function (event, services) {
         return mnPoolDefault.get().then(function (poolsDefault) {
-          var firstTimeAddedServices = mnMemoryQuotaService.getFirstTimeAddedServices(["index", "fts"], services, poolsDefault.nodes);
+                var firstTimeAddedServices = mnMemoryQuotaService.getFirstTimeAddedServices(["index", "fts", "cbas"], services, poolsDefault.nodes);
           if (firstTimeAddedServices.count) {
             $uibModal.open({
               windowTopClass: "without-titlebar-close",

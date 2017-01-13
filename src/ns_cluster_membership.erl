@@ -219,7 +219,7 @@ supported_services_for_version(CompatVersion) ->
             Services1 = [n1ql, index] ++ Services0,
             case cluster_compat_mode:is_version_45(CompatVersion) of
                 true ->
-                    [fts] ++ maybe_example_service() ++ Services1;
+                    [fts, cbas] ++ maybe_example_service() ++ Services1;
                 false ->
                     Services1
             end;

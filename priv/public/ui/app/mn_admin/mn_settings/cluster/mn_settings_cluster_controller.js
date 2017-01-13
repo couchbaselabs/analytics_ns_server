@@ -75,6 +75,7 @@
         kv: true,
         index: mnPoolDefault.export.compat.atLeast40,
         fts: mnPoolDefault.export.compat.atLeast45,
+        cbas: mnPoolDefault.export.compat.atLeast45,
         n1ql: mnPoolDefault.export.compat.atLeast40
       }, false))
         .applyToScope(function (resp) {
