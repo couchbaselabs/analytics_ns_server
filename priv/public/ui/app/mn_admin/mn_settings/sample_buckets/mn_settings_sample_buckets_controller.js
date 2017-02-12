@@ -14,10 +14,14 @@
     vm.selected = {};
     vm.isCreateButtonDisabled = isCreateButtonDisabled;
     vm.installSampleBuckets = installSampleBuckets;
+    vm.isAnyBucketSelected = isAnyBucketSelected;
 
     activate();
     function getState(selected) {
       return mnPromiseHelper(vm, mnSettingsSampleBucketsService.getSampleBucketsState(selected || vm.selected)).applyToScope("state");
+    }
+    function doGetState() {
+      getState();
     }
     function activate() {
       getState().showSpinner();
@@ -26,7 +30,11 @@
           getState(value);
         }
       }, true);
+      $scope.$on("bucketUriChanged", doGetState);
+      $scope.$on("nodesChanged", doGetState);
+      $scope.$on("reloadTasksPoller", doGetState);
     }
+
 
     function installSampleBuckets() {
       mnPromiseHelper(vm, mnSettingsSampleBucketsService.installSampleBuckets(vm.selected))
@@ -35,11 +43,15 @@
         .reloadState();
     }
 
+    function isAnyBucketSelected() {
+      return _.keys(_.pick(vm.selected, _.identity)).length;
+    }
+
     function isCreateButtonDisabled() {
       return vm.viewLoading || vm.state &&
              (_.chain(vm.state.warnings).values().some().value() ||
              !vm.state.available.length) ||
-             !_.keys(_.pick(vm.selected, _.identity)).length;
+             !isAnyBucketSelected();
     }
 
   }

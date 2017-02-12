@@ -35,17 +35,15 @@
                             keep_nodes,
                             eject_nodes,
                             failed_nodes,
-                            stop_timer,
-                            consider_post_rebalance_upgrade = true}).
+                            stop_timer}).
 -record(recovery_state, {uuid :: binary(),
                          bucket :: bucket_name(),
                          recoverer_state :: any()}).
--record(dcp_upgrade_state, {upgrader, progress, restart}).
 
 
 %% API
 -export([create_bucket/3,
-         update_bucket/3,
+         update_bucket/4,
          delete_bucket/1,
          flush_bucket/1,
          failover/1,
@@ -99,8 +97,7 @@
 -export([idle/2, idle/3,
          janitor_running/2, janitor_running/3,
          rebalancing/2, rebalancing/3,
-         recovery/2, recovery/3,
-         upgrading_to_dcp/2, upgrading_to_dcp/3]).
+         recovery/2, recovery/3]).
 
 
 %%
@@ -125,12 +122,14 @@ create_bucket(BucketType, BucketName, NewConfig) ->
     gen_fsm:sync_send_event(?SERVER, {create_bucket, BucketType, BucketName,
                                       NewConfig}, infinity).
 
--spec update_bucket(memcached|membase, nonempty_string(), list()) ->
+-spec update_bucket(memcached|membase, undefined|couchstore|ephemeral,
+                    nonempty_string(), list()) ->
                            ok | {exit, {not_found, nonempty_string()}, []}
                                | rebalance_running.
-update_bucket(BucketType, BucketName, UpdatedProps) ->
+update_bucket(BucketType, StorageMode, BucketName, UpdatedProps) ->
     wait_for_orchestrator(),
-    gen_fsm:sync_send_all_state_event(?SERVER, {update_bucket, BucketType, BucketName,
+    gen_fsm:sync_send_all_state_event(?SERVER, {update_bucket, BucketType,
+                                                StorageMode, BucketName,
                                                 UpdatedProps}, infinity).
 
 %% Deletes bucket. Makes sure that once it returns it's already dead.
@@ -363,7 +362,6 @@ is_recovery_running() ->
 code_change(_OldVsn, StateName, StateData, _Extra) ->
     {ok, StateName, StateData}.
 
-
 init([]) ->
     process_flag(trap_exit, true),
     self() ! janitor,
@@ -382,11 +380,23 @@ init([]) ->
 handle_event(Event, StateName, State) ->
     {stop, {unhandled, Event, StateName}, State}.
 
-
-handle_sync_event({update_bucket, _BucketType, _BucketName, _UpdatedProps}, _From, rebalancing, State) ->
+%% In the mixed mode, depending upon the node from which the update bucket
+%% request is being sent, the length of the message could vary. In order to
+%% be backward compatible we need to field both types of messages.
+handle_sync_event({update_bucket, memcached, BucketName, UpdatedProps}, From,
+                 StateName, State) ->
+    handle_sync_event({update_bucket, memcached, undefined, BucketName,
+                      UpdatedProps}, From, StateName, State);
+handle_sync_event({update_bucket, membase, BucketName, UpdatedProps}, From,
+                  StateName, State) ->
+    handle_sync_event({update_bucket, membase, couchstore, BucketName,
+                      UpdatedProps}, From, StateName, State);
+handle_sync_event({update_bucket, _, _, _, _}, _From, rebalancing, State) ->
     {reply, rebalance_running, rebalancing, State};
-handle_sync_event({update_bucket, BucketType, BucketName, UpdatedProps}, _From, StateName, State) ->
-    Reply = ns_bucket:update_bucket_props(BucketType, BucketName, UpdatedProps),
+handle_sync_event({update_bucket, BucketType, StorageMode, BucketName,
+                  UpdatedProps}, _From, StateName, State) ->
+    Reply = ns_bucket:update_bucket_props(BucketType, StorageMode,
+                                          BucketName, UpdatedProps),
     case Reply of
         ok ->
             %% request janitor run to fix map if the replica # has changed
@@ -511,8 +521,7 @@ handle_info({'EXIT', Pid, Reason}, rebalancing,
                                keep_nodes=KeepNodes,
                                eject_nodes=EjectNodes,
                                failed_nodes=FailedNodes,
-                               stop_timer=MaybeTref,
-                               consider_post_rebalance_upgrade=ConsiderUpgrade} = State) ->
+                               stop_timer=MaybeTref}) ->
     Status = case Reason of
                  graceful_failover_done ->
                      none;
@@ -544,7 +553,7 @@ handle_info({'EXIT', Pid, Reason}, rebalancing,
     ns_config:set([{rebalance_status, Status},
                    {rebalance_status_uuid, couch_uuids:random()},
                    {rebalancer_pid, undefined}]),
-    rpc:eval_everywhere(diag_handler, log_all_tap_and_checkpoint_stats, []),
+    rpc:eval_everywhere(diag_handler, log_all_dcp_stats, []),
     case (lists:member(node(), EjectNodes) andalso Reason =:= normal) orelse
         lists:member(node(), FailedNodes) of
         true ->
@@ -554,50 +563,7 @@ handle_info({'EXIT', Pid, Reason}, rebalancing,
             ok
     end,
 
-    case ConsiderUpgrade of
-        true ->
-            Restart =
-                try
-                    consider_switching_compat_mode(),
-                    false
-                catch exit:normal ->
-                        true
-                end,
-
-            maybe_start_upgrade_to_dcp(Restart);
-        false ->
-            ?log_debug("Skipping post-rebalance upgrade for rebalance ~p", [State]),
-            {next_state, idle, #idle_state{}}
-    end;
-
-handle_info({'EXIT', Pid, Reason}, upgrading_to_dcp,
-            #dcp_upgrade_state{upgrader = Pid,
-                               restart = Restart}) ->
-    Status = case Reason of
-                 normal ->
-                     ?user_log(?REBALANCE_SUCCESSFUL,
-                               "DCP upgrade completed successfully.~n"),
-                     none;
-                 stopped ->
-                     ?user_log(?REBALANCE_STOPPED,
-                               "DCP upgrade stopped by user.~n"),
-                     none;
-                 _ ->
-                     ?user_log(?REBALANCE_FAILED,
-                               "DCP upgrade exited with reason ~p~n", [Reason]),
-                     {none, <<"DCP upgrade failed. See logs for detailed reason.">>}
-             end,
-
-    ns_config:set([{rebalance_status, Status},
-                   {rebalance_status_uuid, couch_uuids:random()},
-                   {rebalancer_pid, undefined}]),
-
-    case Restart of
-        true ->
-            exit(normal);
-        false ->
-            {next_state, idle, #idle_state{}}
-    end;
+    {next_state, idle, #idle_state{}};
 
 handle_info(Msg, StateName, StateData) ->
     ?log_warning("Got unexpected message ~p in state ~p with data ~p",
@@ -715,13 +681,7 @@ idle({delete_bucket, BucketName}, _From,
 
     {reply, Reply, idle, NewState};
 idle({failover, Node}, _From, State) ->
-    Result =
-        case ns_rebalancer:check_failover_possible(Node) of
-            ok ->
-                ns_rebalancer:orchestrate_failover(Node);
-            Error ->
-                Error
-        end,
+    Result = ns_rebalancer:run_failover(Node),
     {reply, Result, idle, State};
 idle({try_autofailover, Node}, From, State) ->
     case ns_rebalancer:validate_autofailover(Node) of
@@ -811,8 +771,7 @@ idle({move_vbuckets, Bucket, Moves}, _From, #idle_state{janitor_requests = Janit
                         progress=Progress,
                         keep_nodes=ns_node_disco:nodes_wanted(),
                         eject_nodes=[],
-                        failed_nodes=[],
-                        consider_post_rebalance_upgrade=false}};
+                        failed_nodes=[]}};
 idle(stop_rebalance, _From, State) ->
     ns_janitor:stop_rebalance_status(
       fun () ->
@@ -958,34 +917,9 @@ rebalancing(Event, _From, State) ->
     ?log_warning("Got event ~p while rebalancing.", [Event]),
     {reply, rebalance_running, rebalancing, State}.
 
-%% Asynchronous upgrading_to_dcp events
-upgrading_to_dcp({update_progress, Service, ServiceProgress},
-                 #dcp_upgrade_state{progress=Old} = State) ->
-    NewProgress = rebalance_progress:update(Service, ServiceProgress, Old),
-    {next_state, upgrading_to_dcp,
-     State#dcp_upgrade_state{progress=NewProgress}}.
-
-%% Synchronous upgrading_to_dcp events
-upgrading_to_dcp({start_rebalance, _KeepNodes, _EjectNodes, _FailedNodes},
-                 _From, State) ->
-    ?user_log(?REBALANCE_NOT_STARTED,
-              "Not rebalancing because rebalance is already in progress.~n"),
-    {reply, in_progress, upgrading_to_dcp, State};
-upgrading_to_dcp(stop_rebalance, _From,
-                 #dcp_upgrade_state{upgrader=Pid} = State) ->
-    Pid ! stop,
-    {reply, ok, upgrading_to_dcp, State};
-upgrading_to_dcp(rebalance_progress, _From,
-                 #dcp_upgrade_state{progress = Progress} = State) ->
-    AggregatedProgress = dict:to_list(rebalance_progress:get_progress(Progress)),
-    {reply, {running, AggregatedProgress}, upgrading_to_dcp, State};
-upgrading_to_dcp(Event, _From, State) ->
-    ?log_warning("Got event ~p while upgrading to DCP.", [Event]),
-    {reply, dcp_upgrade_running, upgrading_to_dcp, State}.
-
 recovery(Event, State) ->
     ?log_warning("Got unexpected event: ~p", [Event]),
-    {next_state, recovery_running, State}.
+    {next_state, recovery, State}.
 
 recovery({start_recovery, Bucket}, _From,
          #recovery_state{bucket=BucketInRecovery,
@@ -1349,37 +1283,12 @@ multicall_moxi_restart(Nodes, Timeout) ->
             FailedNodes ++ BadResults
     end.
 
-maybe_start_upgrade_to_dcp(Restart) ->
-    maybe_start_upgrade_to_dcp(Restart, trivial).
-
-maybe_start_upgrade_to_dcp(Restart, Type) ->
-    case {dcp_upgrade:get_buckets_to_upgrade(), Type} of
-        {[], _} ->
-            case Restart of
-                true ->
-                    exit(normal);
-                false ->
-                    {next_state, idle, #idle_state{}}
-            end;
-        {Buckets, trivial} ->
-            dcp_upgrade:consider_trivial_upgrade(Buckets),
-            maybe_start_upgrade_to_dcp(Restart, nontrivial);
-        {Buckets, nontrivial} ->
-            {ok, Pid} = dcp_upgrade:start_link(Buckets),
-
-            ns_config:set([{rebalance_status, running},
-                           {rebalance_status_uuid, couch_uuids:random()},
-                           {rebalancer_pid, Pid}]),
-
-            Nodes = ns_cluster_membership:active_nodes(),
-            Progress = rebalance_progress:init(Nodes, [kv]),
-
-            {next_state, upgrading_to_dcp,
-             #dcp_upgrade_state{upgrader = Pid,
-                                progress = Progress,
-                                restart = Restart}}
-    end.
-
 get_janitor_items() ->
-    Buckets = [{bucket, B} || B <- ns_bucket:get_bucket_names_of_type(membase)],
+    MembaseBuckets = [{bucket, B} ||
+                         B <- ns_bucket:get_bucket_names_of_type(membase,
+                                                                 couchstore)],
+    EphemeralBuckets = [{bucket, B} ||
+                           B <- ns_bucket:get_bucket_names_of_type(membase,
+                                                                   ephemeral)],
+    Buckets = MembaseBuckets ++ EphemeralBuckets,
     [services | Buckets].

@@ -38,8 +38,6 @@
          flush/1,
          get_vbucket/2,
          list_buckets/1,
-         get_last_closed_checkpoint/2,
-         create_new_checkpoint/2,
          refresh_isasl/1,
          refresh_ssl_certs/1,
          noop/1,
@@ -48,21 +46,14 @@
          set_vbucket/3,
          stats/1,
          stats/4,
-         tap_connect/2,
-         deregister_tap_client/2,
          sync/4,
          get_meta/3,
          update_with_rev/7,
          set_engine_param/4,
-         get_zero_open_checkpoint_vbuckets/2,
-         change_vbucket_filter/3,
          enable_traffic/1,
          disable_traffic/1,
-         wait_for_checkpoint_persistence/3,
-         get_tap_docs_estimate/3,
          get_dcp_docs_estimate/3,
          map_status/1,
-         get_mass_tap_docs_estimate/2,
          get_mass_dcp_docs_estimate/2,
          ext/2,
          rev_to_mcd_ext/1,
@@ -74,7 +65,8 @@
          config_validate/2,
          config_reload/1,
          audit_put/3,
-         audit_config_reload/1
+         audit_config_reload/1,
+         refresh_rbac/1
         ]).
 
 -type recv_callback() :: fun((_, _, _) -> any()) | undefined.
@@ -89,8 +81,7 @@
                      ?CMD_LIST_BUCKETS | ?CMD_EXPAND_BUCKET |
                      ?CMD_SELECT_BUCKET | ?CMD_SET_PARAM | ?CMD_GET_REPLICA |
                      ?CMD_SET_VBUCKET | ?CMD_GET_VBUCKET | ?CMD_DELETE_VBUCKET |
-                     ?CMD_LAST_CLOSED_CHECKPOINT | ?CMD_ISASL_REFRESH |
-                     ?CMD_GET_META | ?CMD_GETQ_META | ?CMD_CREATE_CHECKPOINT |
+                     ?CMD_ISASL_REFRESH | ?CMD_GET_META | ?CMD_GETQ_META |
                      ?CMD_SET_WITH_META | ?CMD_SETQ_WITH_META |
                      ?CMD_SETQ_WITH_META |
                      ?CMD_DEL_WITH_META | ?CMD_DELQ_WITH_META |
@@ -98,7 +89,8 @@
                      ?RPREPENDQ | ?RDELETE | ?RDELETEQ | ?RINCR | ?RINCRQ |
                      ?RDECR | ?RDECRQ | ?SYNC | ?CMD_CHECKPOINT_PERSISTENCE |
                      ?CMD_SEQNO_PERSISTENCE | ?CMD_GET_RANDOM_KEY |
-                     ?CMD_COMPACT_DB | ?CMD_AUDIT_PUT | ?CMD_AUDIT_CONFIG_RELOAD.
+                     ?CMD_COMPACT_DB | ?CMD_AUDIT_PUT | ?CMD_AUDIT_CONFIG_RELOAD |
+                     ?CMD_RBAC_REFRESH.
 
 
 %% A memcached client that speaks binary protocol.
@@ -305,25 +297,6 @@ list_buckets(Sock) ->
         Response -> process_error_response(Response)
     end.
 
-get_last_closed_checkpoint(Sock, VBucket) ->
-    case cmd(?CMD_LAST_CLOSED_CHECKPOINT, Sock, undefined, undefined,
-            {#mc_header{vbucket = VBucket},
-             #mc_entry{}}) of
-        {ok, #mc_header{status=?SUCCESS}, #mc_entry{data=CheckpointBin}, _NCB} ->
-            <<Checkpoint:64>> = CheckpointBin,
-            {ok, Checkpoint};
-        Response -> process_error_response(Response)
-    end.
-
-create_new_checkpoint(Sock, VBucket) ->
-    case cmd(?CMD_CREATE_CHECKPOINT, Sock, undefined, undefined,
-             {#mc_header{vbucket = VBucket}, #mc_entry{}}) of
-        {ok, #mc_header{status=?SUCCESS}, #mc_entry{data=CheckpointBin}, _NCB} ->
-            <<Checkpoint:64, PersistedCkpt:64>> = CheckpointBin,
-            {ok, Checkpoint, PersistedCkpt};
-        Response -> process_error_response(Response)
-    end.
-
 refresh_isasl(Sock) ->
     case cmd(?CMD_ISASL_REFRESH, Sock, undefined, undefined, {#mc_header{}, #mc_entry{}}) of
         {ok, #mc_header{status=?SUCCESS}, _, _} ->
@@ -431,47 +404,6 @@ stats(Sock, Key, CB, CBData) ->
         Response -> process_error_response(Response)
     end.
 
-%% @doc Start TAP on an existing connection. At the moment, the caller
-%% is responsible for processing the TAP messages that come over the
-%% socket.
-%%
-%% @spec tap_connect(Sock::port(), Opts::[{vbuckets, [integer()]} |
-%%                                        takeover | {name, binary()}]) -> ok.
-tap_connect(Sock, Opts) ->
-    Flags = ?BACKFILL bor ?SUPPORT_ACK bor
-        case proplists:get_value(vbuckets, Opts) of
-            undefined -> 0;
-            _         -> ?LIST_VBUCKETS
-        end bor
-        case proplists:get_bool(takeover, Opts) of
-            true  -> ?TAKEOVER_VBUCKETS;
-            false -> 0
-        end bor
-        case proplists:get_value(checkpoints, Opts) of
-            undefined -> 0;
-            _ -> ?CHECKPOINT
-        end,
-    Timestamp = 0,
-    Extra = case proplists:get_value(vbuckets, Opts) of
-                undefined ->
-                    <<>>;
-                VBuckets ->
-                    NumVBuckets = length(VBuckets),
-                    <<NumVBuckets:16, << <<VBucket:16>> || VBucket <- VBuckets>>/binary >>
-            end,
-    CheckpointMap = case proplists:get_value(checkpoints, Opts) of
-                    undefined ->
-                        <<>>;
-                    Pairs ->
-                        NumPairs = length(Pairs),
-                        <<NumPairs:16, << <<VBucket:16, Checkpoint:64>> || {VBucket, Checkpoint} <- Pairs>>/binary >>
-                    end,
-    Data = <<Timestamp:64, Extra/binary, CheckpointMap/binary>>,
-    cmd(?TAP_CONNECT, Sock, undefined, undefined,
-        {#mc_header{}, #mc_entry{key = proplists:get_value(name, Opts),
-                                 ext = <<Flags:32>>,
-                                 data = Data}}).
-
 get_meta(Sock, Key, VBucket) ->
     case cmd(?CMD_GET_META, Sock, undefined, undefined,
              {#mc_header{vbucket = VBucket},
@@ -542,30 +474,6 @@ do_update_with_rev(Sock, VBucket, Key, Value, Rev, CAS, OpCode) ->
             process_error_response(Response)
     end.
 
--spec deregister_tap_client(Sock::port(), TapName::binary()) -> ok.
-deregister_tap_client(Sock, TapName) ->
-    HeaderEntry = {#mc_header{}, #mc_entry{key = TapName}},
-    {ok, #mc_header{status=?SUCCESS}, _ME, _NCB} =
-        cmd(?CMD_DEREGISTER_TAP_CLIENT, Sock, undefined, undefined, HeaderEntry),
-    ok.
-
--spec change_vbucket_filter(port(), binary(),
-                            [{vbucket_id(), checkpoint_id()}]) -> ok | mc_error().
-change_vbucket_filter(Sock, TapName, VBuckets) ->
-    VBucketsCount = length(VBuckets),
-    Data =
-        << VBucketsCount:16,
-           << <<V:16, C:64>> || {V, C} <- VBuckets >>/binary >>,
-
-    case cmd(?CMD_CHANGE_VB_FILTER, Sock, undefined, undefined,
-             {#mc_header{}, #mc_entry{key = TapName,
-                                      data = Data}}) of
-        {ok, #mc_header{status=?SUCCESS}, _, _} ->
-            ok;
-        Other ->
-            process_error_response(Other)
-    end.
-
 enable_traffic(Sock) ->
     case cmd(?CMD_ENABLE_TRAFFIC, Sock, undefined, undefined,
              {#mc_header{}, #mc_entry{}}) of
@@ -606,7 +514,6 @@ is_quiet(?RPREPENDQ)  -> true;
 is_quiet(?RDELETEQ)   -> true;
 is_quiet(?RINCRQ)     -> true;
 is_quiet(?RDECRQ)     -> true;
-is_quiet(?TAP_CONNECT) -> true;
 is_quiet(?CMD_GETQ_META) -> true;
 is_quiet(?CMD_SETQ_WITH_META) -> true;
 is_quiet(?CMD_ADDQ_WITH_META) -> true;
@@ -842,64 +749,6 @@ stats_subcommand_test() ->
 
 -endif.
 
-get_zero_open_checkpoint_vbuckets(Upstream, VBuckets, QuickStats) ->
-    T = ets:new('', [private, set]),
-    try
-        [case iolist_to_binary([<<"vb_">>, integer_to_list(VBucket), <<":open_checkpoint_id">>]) of
-             StatName -> ets:insert(T, {StatName, VBucket})
-         end || VBucket <- VBuckets],
-        Checker = fun (Key, ValueBin, Acc) ->
-                          case ets:lookup(T, Key) of
-                              [] ->
-                                  Acc;
-                              [{_, VBucket}] ->
-                                  ets:delete(T, Key),
-                                  case ValueBin =:= <<"0">> of
-                                      true ->
-                                          [VBucket | Acc];
-                                      _ ->
-                                          Acc
-                                  end
-                          end
-                  end,
-        {ok, Zeros} = QuickStats(Upstream, <<"checkpoint">>, Checker, []),
-        Missing = ets:match(T, {'_', '$1'}),
-        lists:flatten([Missing | Zeros])
-    after
-        ets:delete(T)
-    end.
-
--ifdef(EUNIT).
-
-get_zero_open_checkpoint_vbuckets_test() ->
-    Stats = [{<<"vb_10:open_checkpoint_id">>, <<"0">>},
-             {<<"vb_11:open_checkpoint_id">>, <<"1">>},
-             {<<"vb_1:open_checkpoint_id">>, <<"3">>},
-             {<<"vb_1:casdsd_checkpoint_id">>, <<"0">>},
-             {<<"vb_5:open_checkpoint_id_">>, <<"0">>},
-             {<<"vb_678:open_checkpoint_id_">>, <<"1000232">>},
-             {<<"vb_678:open_checkpoint_id">>, <<"1000232">>},
-             {<<"vb_679:open_checkpoint_id_">>, <<"1">>}],
-    Run = fun (VBuckets, S) ->
-                  F = fun (_, <<"checkpoint">>, Folder, Acc) ->
-                              {ok, lists:foldl(fun ({K, V}, Acc1) ->
-                                                       Folder(K, V, Acc1)
-                                               end, Acc, S)}
-                      end,
-                  get_zero_open_checkpoint_vbuckets([], VBuckets, F)
-          end,
-    ?assertEqual([], lists:sort(Run([1], Stats))),
-    ?assertEqual([5, 10], lists:sort(Run([1, 5, 10], Stats))),
-    ?assertEqual([5, 10, 15], lists:sort(Run([1, 5, 10, 15], Stats))),
-    ?assertEqual([5, 10, 15], lists:sort(Run([15, 5, 10, 1], Stats))),
-    ?assertEqual([5, 10, 15, 679], lists:sort(Run([15, 5, 10, 1, 679, 678], Stats))).
-
--endif.
-
--spec get_zero_open_checkpoint_vbuckets(port(), [vbucket_id()]) -> [vbucket_id()].
-get_zero_open_checkpoint_vbuckets(Upstream, VBuckets) ->
-    get_zero_open_checkpoint_vbuckets(Upstream, VBuckets, fun mc_binary:quick_stats/4).
-
 build_sync_flags(Key, VBucket, CAS) ->
     <<
      0:16/big, % Reserved
@@ -916,19 +765,6 @@ build_sync_flags(Key, VBucket, CAS) ->
      Key/binary
      >>.
 
-wait_for_checkpoint_persistence(Sock, VBucket, CheckpointId) ->
-    RV = cmd(?CMD_CHECKPOINT_PERSISTENCE, Sock, undefined, undefined,
-             {#mc_header{vbucket = VBucket},
-              #mc_entry{key = <<"">>,
-                        data = <<CheckpointId:64/big>>}},
-             infinity),
-    case RV of
-        {ok, #mc_header{status=?SUCCESS}, _, _} ->
-            ok;
-        Other ->
-            process_error_response(Other)
-    end.
-
 wait_for_seqno_persistence(Sock, VBucket, SeqNo) ->
     RV = cmd(?CMD_SEQNO_PERSISTENCE, Sock, undefined, undefined,
              {#mc_header{vbucket = VBucket},
@@ -941,35 +777,6 @@ wait_for_seqno_persistence(Sock, VBucket, SeqNo) ->
         Other ->
             process_error_response(Other)
     end.
-
--spec get_tap_docs_estimate(port(), vbucket_id(), binary()) ->
-                                   {ok, {non_neg_integer(), non_neg_integer(), binary()}}.
-get_tap_docs_estimate(Sock, VBucket, TapName) ->
-    Default = {0, 0, <<"unknown">>},
-
-    RV = mc_binary:quick_stats(
-           Sock,
-           iolist_to_binary([<<"tap-vbtakeover ">>, integer_to_list(VBucket), $\s | TapName]),
-           fun (<<"estimate">>, V, {_, AccChkItems, AccStatus}) ->
-                   {list_to_integer(binary_to_list(V)), AccChkItems, AccStatus};
-               (<<"chk_items">>, V, {AccEstimate, _, AccStatus}) ->
-                   {AccEstimate, list_to_integer(binary_to_list(V)), AccStatus};
-               (<<"status">>, V, {AccEstimate, AccChkItems, _}) ->
-                   {AccEstimate, AccChkItems, V};
-               (_, _, Acc) ->
-                   Acc
-           end, Default),
-
-    handle_docs_estimate_result(RV, Default).
-
--spec get_mass_tap_docs_estimate(port(), [vbucket_id()]) ->
-                                        {ok, [{non_neg_integer(), non_neg_integer(), binary()}]}.
-get_mass_tap_docs_estimate(Sock, VBuckets) ->
-    %% TODO: consider pipelining that stuff. For now it just does
-    %% vbucket after vbucket sequentially
-    {ok, [case get_tap_docs_estimate(Sock, VB, <<>>) of
-              {ok, V} -> V
-          end || VB <- VBuckets]}.
 
 -spec get_dcp_docs_estimate(port(), vbucket_id(), binary() | string()) ->
                                    {ok, {non_neg_integer(), non_neg_integer(), binary()}}.
@@ -1058,6 +865,13 @@ audit_config_reload(Sock) ->
     RV = cmd(?CMD_AUDIT_CONFIG_RELOAD, Sock, undefined, undefined,
              {#mc_header{}, #mc_entry{}},
              infinity),
+    case process_error_response(RV) of
+        {memcached_error, success, _} -> ok;
+        Err -> Err
+    end.
+
+refresh_rbac(Sock) ->
+    RV = cmd(?CMD_RBAC_REFRESH, Sock, undefined, undefined, {#mc_header{}, #mc_entry{}}),
     case process_error_response(RV) of
         {memcached_error, success, _} -> ok;
         Err -> Err

@@ -55,7 +55,7 @@
       var promise = mnServersService.addServer(vm.addNodeConfig.selectedGroup, vm.addNodeConfig.credentials, servicesList);
 
       mnPromiseHelper(vm, promise, $uibModalInstance)
-        .showErrorsSensitiveSpinner()
+        .showGlobalSpinner()
         .catchErrors()
         .closeOnSuccess()
         .broadcast("reloadServersPoller")

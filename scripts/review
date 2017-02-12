@@ -45,7 +45,7 @@ function get_diff_commits() {
     _branch=$1
     _upstream=$2
 
-    git log --pretty=tformat:%H ${_upstream}..${_branch} | tac
+    git log --reverse --pretty=tformat:%H ${_upstream}..${_branch}
 }
 
 function get_current_branch() {
@@ -86,15 +86,30 @@ function usage() {
 
     echo | error <<EOF
 Usage:
-	${_name} [--branch <branch>] [--upstream <upstream>] [--port <int>]
-	${_spacing} [--verified <-1|0|+1>] [--review <-2|-1|0|+1|+2>] [--submit] [--dry-run]
+	${_name} [-b|--branch <branch>] [-u|--upstream <upstream>] [-p|--port <int>]
+	${_spacing} [-v|--verified <-1|0|+1>] [-r|--review <-2|-1|0|+1|+2>]
+	${_spacing} [-s|--submit] [-d|--dry-run]
 EOF
     exit 1
 }
 
-ARGS=$(getopt -o "" -l "branch:,upstream:,verified:,review:,port:,submit,dry-run" \
-              -n "$0" -- "$@")
+SHORT_OPTS="b:u:v:r:p:sd"
+LONG_OPTS="branch:,upstream:,verified:,review:,port:,submit,dry-run"
 
+function have_enhanced_getopt() {
+    getopt -T > /dev/null 2>&1
+    [ $? -eq 4 ]
+}
+
+function get_args() {
+    if have_enhanced_getopt; then
+        getopt -o "${SHORT_OPTS}" -l "${LONG_OPTS}" -n "$0" -- "$@"
+    else
+        getopt "${SHORT_OPTS}" "$@"
+    fi
+}
+
+ARGS=$(get_args "$@")
 if [ $? != 0 ]; then
     usage
 fi
@@ -110,13 +125,13 @@ UPSTREAM=
 eval set -- "$ARGS"
 while true; do
     case "$1" in
-        --dry-run) DRY_RUN=yes ; shift ;;
-        --verified) VERIFIED="$2" ; shift 2 ;;
-        --review) REVIEW="$2" ; shift 2 ;;
-        --submit) SUBMIT=yes ; shift ;;
-        --branch) BRANCH="$2" ; shift 2 ;;
-        --port) PORT=$2 ; shift 2 ;;
-        --upstream) UPSTREAM=$2 ; shift 2 ;;
+        -d|--dry-run) DRY_RUN=yes ; shift ;;
+        -v|--verified) VERIFIED="$2" ; shift 2 ;;
+        -r|--review) REVIEW="$2" ; shift 2 ;;
+        -s|--submit) SUBMIT=yes ; shift ;;
+        -b|--branch) BRANCH="$2" ; shift 2 ;;
+        -p|--port) PORT=$2 ; shift 2 ;;
+        -u|--upstream) UPSTREAM=$2 ; shift 2 ;;
         --) shift ; break ;;
     esac
 done
@@ -135,7 +150,7 @@ fi
 
 if [ -n "${REVIEW}" ]; then
     validate_arg "${REVIEW}" "([-+][12])|0" || usage "Invalid value for --review"
-    FLAGS="${FLAGS} --review ${REVIEW}"
+    FLAGS="${FLAGS} --code-review ${REVIEW}"
 fi
 
 if [ "${SUBMIT}" = yes ]; then

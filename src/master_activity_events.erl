@@ -18,9 +18,6 @@
 -include("ns_common.hrl").
 
 -export([start_link_timestamper/0,
-         note_not_ready_vbuckets/2,
-         note_ebucketmigrator_start/4,
-         note_deregister_tap_name/3,
          note_vbucket_state_change/4,
          note_bucket_creation/3,
          note_bucket_deletion/1,
@@ -33,16 +30,11 @@
          note_became_master/0,
          note_name_changed/0,
          note_observed_death/3,
-         note_vbucket_filter_change_old/0,
-         note_vbucket_filter_change_native/2,
-         note_ebucketmigrator_upstream_reused/3,
          note_bucket_rebalance_started/1,
          note_bucket_rebalance_ended/1,
          note_bucket_failover_started/2,
          note_bucket_failover_ended/2,
          note_indexing_initiated/3,
-         note_checkpoint_waiting_started/4,
-         note_checkpoint_waiting_ended/4,
          note_seqno_waiting_started/4,
          note_seqno_waiting_ended/4,
          note_takeover_started/4,
@@ -54,12 +46,9 @@
          note_compaction_uninhibit_started/2,
          note_compaction_uninhibit_done/2,
          note_forced_inhibited_view_compaction/1,
-         note_tap_stats/4,
          event_to_jsons/1,
          event_to_formatted_iolist/1,
          format_some_history/1,
-         note_vbucket_upgraded_to_dcp/2,
-         note_bucket_upgraded_to_dcp/1,
          note_dcp_replicator_start/5,
          note_dcp_add_stream/6,
          note_dcp_close_stream/5,
@@ -73,16 +62,6 @@
 
 submit_cast(Arg) ->
     (catch gen_event:notify(master_activity_events_ingress, {submit_master_event, Arg})).
-
-note_not_ready_vbuckets(Pid, VBucketIds) ->
-    submit_cast({not_ready_vbuckets, Pid, VBucketIds}).
-
-note_ebucketmigrator_start(Pid, Src, Dst, Options) ->
-    submit_cast({ebucketmigrator_start, Pid, Src, Dst, Options}),
-    master_activity_events_pids_watcher:observe_fate_of(Pid, {ebucketmigrator_terminate, Src, Dst, Options}).
-
-note_deregister_tap_name(Bucket, Src, Name) ->
-    submit_cast({deregister_tap_name, self(), Bucket, Src, Name}).
 
 note_vbucket_state_change(Bucket, Node, VBucketId, NewState) ->
     submit_cast({vbucket_state_change, Bucket, Node, VBucketId, NewState}).
@@ -135,15 +114,6 @@ note_name_changed() ->
 note_observed_death(Pid, Reason, EventTuple) ->
     submit_cast(list_to_tuple(tuple_to_list(EventTuple) ++ [Pid, Reason])).
 
-note_vbucket_filter_change_old() ->
-    submit_cast({vbucket_filter_change_old, self()}).
-
-note_vbucket_filter_change_native(TapName, Checkpoints) ->
-    submit_cast({vbucket_filter_change_native, self(), TapName, Checkpoints}).
-
-note_ebucketmigrator_upstream_reused(Pid, OldPid, TapName) ->
-    submit_cast({ebucketmigrator_upstream_reused, Pid, OldPid, TapName}).
-
 note_bucket_rebalance_started(BucketName) ->
     submit_cast({bucket_rebalance_started, BucketName, self()}).
 
@@ -159,12 +129,6 @@ note_bucket_failover_ended(BucketName, Node) ->
 note_indexing_initiated(_BucketName, [], _VBucket) -> ok;
 note_indexing_initiated(BucketName, [MasterNode], VBucket) ->
     submit_cast({indexing_initated, BucketName, MasterNode, VBucket}).
-
-note_checkpoint_waiting_started(BucketName, VBucket, WaitedCheckpointId, Nodes) ->
-    submit_cast({checkpoint_waiting_started, BucketName, VBucket, WaitedCheckpointId, Nodes}).
-
-note_checkpoint_waiting_ended(BucketName, VBucket, WaitedCheckpointId, Nodes) ->
-    submit_cast({checkpoint_waiting_ended, BucketName, VBucket, WaitedCheckpointId, Nodes}).
 
 note_seqno_waiting_started(BucketName, VBucket, SeqNo, Nodes) ->
     submit_cast({seqno_waiting_started, BucketName, VBucket, SeqNo, Nodes}).
@@ -198,15 +162,6 @@ note_compaction_uninhibit_done(BucketName, Node) ->
 
 note_forced_inhibited_view_compaction(BucketName) ->
     submit_cast({forced_inhibited_view_compaction, BucketName, node()}).
-
-note_tap_stats(NoteTag, Estimate, Pid, TapName) ->
-    submit_cast({tap_estimate, NoteTag, Estimate, Pid, TapName}).
-
-note_vbucket_upgraded_to_dcp(Bucket, VBucket) ->
-    submit_cast({note_vbucket_upgraded_to_dcp, Bucket, VBucket}).
-
-note_bucket_upgraded_to_dcp(Bucket) ->
-    submit_cast({note_bucket_upgraded_to_dcp, Bucket}).
 
 note_dcp_replicator_start(Bucket, ConnName, ProducerNode, ConsumerConn, ProducerConn) ->
     Pid = self(),
@@ -392,54 +347,6 @@ maybe_get_pids_node(Pid) when is_pid(Pid) ->
 maybe_get_pids_node(_PerhapsBinary) ->
     skip_this_pair_please.
 
-format_ebucketmigrator_options(Opts) ->
-    {Opts1, MaybeVBuckets} = case lists:keyfind(vbuckets, 1, Opts) of
-                                 false ->
-                                     {Opts, []};
-                                 {vbuckets, VBuckets} ->
-                                     {lists:keydelete(vbuckets, 1, Opts),
-                                      [{vbuckets, VBuckets}]}
-                             end,
-    {Opts2, MaybeCheckpoints} = case lists:keyfind(checkpoints, 1, Opts) of
-                                    false ->
-                                        {Opts1, []};
-                                    {checkpoints, Checkpoints} ->
-                                        {lists:keydelete(checkpoints, 1, Opts1),
-                                         [{checkpoints, {struct, Checkpoints}}]}
-                                end,
-    {MaybeVBuckets ++ MaybeCheckpoints, Opts2}.
-
-event_to_jsons({TS, not_ready_vbuckets, Pid, VBucketIds}) ->
-    [[{vbuckets, VBucketIds}]
-     ++ format_simple_plist_as_json([{type, notReadyVBuckets},
-                                     {ts, misc:time_to_epoch_float(TS)},
-                                     {pid, Pid}])];
-event_to_jsons({TS, ebucketmigrator_start, Pid, Src, Dst, Opts}) ->
-    {FormattedOpts, JustOps} = format_ebucketmigrator_options(Opts),
-    [FormattedOpts ++
-         format_simple_plist_as_json([{type, ebucketmigratorStart},
-                                      {ts, misc:time_to_epoch_float(TS)},
-                                      {node, maybe_get_pids_node(Pid)},
-                                      {pid, Pid},
-                                      {src, format_mcd_pair(Src)},
-                                      {dst, format_mcd_pair(Dst)} | JustOps])];
-event_to_jsons({TS, ebucketmigrator_terminate, Src, Dst, Opts, Pid, Reason}) ->
-    {FormattedOpts, JustOps} = format_ebucketmigrator_options(Opts),
-    [FormattedOpts ++
-         format_simple_plist_as_json([{type, ebucketmigratorTerminate},
-                                      {ts, misc:time_to_epoch_float(TS)},
-                                      {pid, Pid},
-                                      {reason, Reason},
-                                      {src, format_mcd_pair(Src)},
-                                      {dst, format_mcd_pair(Dst)} | JustOps])];
-event_to_jsons({TS, deregister_tap_name, Pid, Bucket, Src, Name}) ->
-    [format_simple_plist_as_json([{type, deregisterTapName},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {bucket, Bucket},
-                                  {pid, Pid},
-                                  {pidNode, maybe_get_pids_node(Pid)},
-                                  {host, format_mcd_pair(Src)},
-                                  {name, Name}])];
 event_to_jsons({TS, vbucket_state_change, Bucket, Node, VBucketId, NewState}) ->
     [format_simple_plist_as_json([{type, vbucketStateChange},
                                   {ts, misc:time_to_epoch_float(TS)},
@@ -508,26 +415,6 @@ event_to_jsons({TS, vbucket_move_done, BucketName, VBucketId}) ->
                                   {ts, misc:time_to_epoch_float(TS)},
                                   {bucket, BucketName},
                                   {vbucket, VBucketId}])];
-
-event_to_jsons({TS, vbucket_filter_change_old, Pid}) ->
-    [format_simple_plist_as_json([{type, vbucketFilterChangeOld},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {pid, Pid},
-                                  {node, maybe_get_pids_node(Pid)}])];
-event_to_jsons({TS, vbucket_filter_change_native, Pid, TapName, Checkpoints}) ->
-    [format_simple_plist_as_json([{type, vbucketFilterChangeNative},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {pid, Pid},
-                                  {node, maybe_get_pids_node(Pid)},
-                                  {name, TapName}]) ++
-         [{checkpoints, {struct, Checkpoints}}]];
-event_to_jsons({TS, ebucketmigrator_upstream_reused, Pid, OldPid, TapName}) ->
-    [format_simple_plist_as_json([{type, ebucketmigratorUpstreamReused},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {pid, Pid},
-                                  {oldPid, OldPid},
-                                  {node, maybe_get_pids_node(Pid)},
-                                  {name, TapName}])];
 
 event_to_jsons({TS, bucket_rebalance_started, BucketName, Pid}) ->
     [format_simple_plist_as_json([{type, bucketRebalanceStarted},
@@ -598,26 +485,6 @@ event_to_jsons({TS, indexing_initated, BucketName, Node, VBucket}) ->
                                   {bucket, BucketName},
                                   {vbucket, VBucket}])];
 
-event_to_jsons({TS, checkpoint_waiting_started, BucketName, VBucket, WaitedCheckpointId, Nodes}) ->
-    Config = ns_config:get(),
-    [format_simple_plist_as_json([{type, checkpointWaitingStarted},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {bucket, BucketName},
-                                  {vbucket, VBucket},
-                                  {checkpointId, WaitedCheckpointId},
-                                  {node, node_to_host(N, Config)}])
-     || N <- Nodes];
-
-event_to_jsons({TS, checkpoint_waiting_ended, BucketName, VBucket, WaitedCheckpointId, Nodes}) ->
-    Config = ns_config:get(),
-    [format_simple_plist_as_json([{type, checkpointWaitingEnded},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {bucket, BucketName},
-                                  {vbucket, VBucket},
-                                  {checkpointId, WaitedCheckpointId},
-                                  {node, node_to_host(N, Config)}])
-     || N <- Nodes];
-
 event_to_jsons({TS, backfill_phase_ended, BucketName, VBucket}) ->
     [format_simple_plist_as_json([{type, backfillPhaseEnded},
                                   {ts, misc:time_to_epoch_float(TS)},
@@ -662,20 +529,6 @@ event_to_jsons({TS, forced_inhibited_view_compaction, BucketName, Node}) ->
                                   {bucket, BucketName},
                                   {node, node_to_host(Node, ns_config:latest())}])];
 
-event_to_jsons({TS, tap_estimate, {Type, BucketName, VBucket, SrcNode, DstNode}, Estimate, Pid, TapName}) ->
-    Cfg = ns_config:get(),
-    [format_simple_plist_as_json([{type, tapEstimate},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {tapType, Type},
-                                  {tapName, TapName},
-                                  {vbucket, VBucket},
-                                  {bucket, BucketName},
-                                  {src, node_to_host(SrcNode, Cfg)},
-                                  {dst, node_to_host(DstNode, Cfg)},
-                                  {estimate, Estimate},
-                                  {pid, Pid},
-                                  {node, maybe_get_pids_node(Pid)}])];
-
 event_to_jsons({TS, seqno_waiting_started, BucketName, VBucket, SeqNo, Nodes}) ->
     Config = ns_config:get(),
     [format_simple_plist_as_json([{type, seqnoWaitingStarted},
@@ -711,17 +564,6 @@ event_to_jsons({TS, takeover_ended, BucketName, VBucket, OldMaster, NewMaster}) 
                                   {vbucket, VBucket},
                                   {oldMaster, node_to_host(OldMaster, ns_config:latest())},
                                   {node, node_to_host(NewMaster, ns_config:latest())}])];
-
-event_to_jsons({TS, note_vbucket_upgraded_to_dcp, BucketName, VBucket}) ->
-    [format_simple_plist_as_json([{type, vbucketUpgradedToDCP},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {bucket, BucketName},
-                                  {vbucket, VBucket}])];
-
-event_to_jsons({TS, note_bucket_upgraded_to_dcp, BucketName}) ->
-    [format_simple_plist_as_json([{type, bucketUpgradedToDCP},
-                                  {ts, misc:time_to_epoch_float(TS)},
-                                  {bucket, BucketName}])];
 
 event_to_jsons({TS, dcp_replicator_start,
                 Bucket, ConnName, ProducerNode, ConsumerConn, ProducerConn, Pid}) ->

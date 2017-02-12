@@ -94,7 +94,8 @@
          validate_by_fun/3,
          execute_if_validated/3]).
 
--define(AUTO_FAILLOVER_MIN_TIMEOUT, 30).
+-define(AUTO_FAILLOVER_MIN_TIMEOUT, 5).
+-define(AUTO_FAILLOVER_MIN_CE_TIMEOUT, 30).
 -define(AUTO_FAILLOVER_MAX_TIMEOUT, 3600).
 -define(PLUGGABLE_UI, "_p").
 
@@ -601,6 +602,8 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                      fun menelaus_web_cluster_logs:handle_cancel_collect_logs/1};
                 ["controller", "resetAdminPassword"] ->
                     {local, fun menelaus_web_rbac:handle_reset_admin_password/1};
+                ["controller", "changePassword"] ->
+                    {no_check, fun menelaus_web_rbac:handle_change_password/1};
                 ["pools", "default", "buckets", Id] ->
                     {{[{bucket, Id}, settings], write},
                      fun menelaus_web_buckets:handle_bucket_update/3,
@@ -671,7 +674,7 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                     {{[admin, memcached], write},
                      fun menelaus_web_mcd_settings:handle_node_post/2, [Node]};
                 ["pools", "default", "checkPermissions"] ->
-                    {{[pools], read},
+                    {no_check,
                      fun menelaus_web_rbac:handle_check_permissions_post/1};
                 ["settings", "indexes"] ->
                     {{[indexes], write}, fun menelaus_web_indexes:handle_settings_post/1};
@@ -847,9 +850,14 @@ serve_ui_env(Req) ->
 handle_ui_root(AppRoot, Path, UiCompatVersion, Plugins, Req)
   when UiCompatVersion =:= ?VERSION_45;
        UiCompatVersion =:= ?SPOCK_VERSION_NUM ->
-    Filename = case UiCompatVersion =:= ?SPOCK_VERSION_NUM andalso use_minified(Req) of
+    Filename = case use_minified(Req) of
                    true ->
-                       filename:join([AppRoot, "ui", "index.min.html"]);
+                       IndexFileName =
+                           case UiCompatVersion =:= ?SPOCK_VERSION_NUM of
+                               true -> "index.min.html";
+                               false -> "classic-index.min.html"
+                           end,
+                       filename:join([AppRoot, "ui", IndexFileName]);
                    _ ->
                        filename:join(AppRoot, Path)
                end,
@@ -866,18 +874,6 @@ handle_ui_root(AppRoot, Path, ?VERSION_41, [], Req) ->
 loop_inner(Req, Info, Path, PathTokens) ->
     menelaus_auth:validate_request(Req),
     perform_action(Req, get_action(Req, Info, Path, PathTokens)).
-
-require_auth(Req) ->
-    case Req:get_header_value("invalid-auth-response") of
-        "on" ->
-            %% We need this for browsers that display auth
-            %% dialog when faced with 401 with
-            %% WWW-Authenticate header response, even via XHR
-            menelaus_util:reply(Req, 401);
-        _ ->
-            menelaus_util:reply(Req, 401, [{"WWW-Authenticate",
-                                            "Basic realm=\"Couchbase Server Admin / REST\""}])
-    end.
 
 -spec get_bucket_id(rbac_permission() | no_check) -> bucket_name() | false.
 get_bucket_id(no_check) ->
@@ -900,7 +896,7 @@ perform_action(Req, {local, Fun}) ->
         {allowed, NewReq} ->
             Fun(NewReq);
         auth_failure ->
-            require_auth(Req)
+            menelaus_util:require_auth(Req)
     end;
 perform_action(Req, {ui, IsSSL, Fun}) ->
     perform_action(Req, {ui, IsSSL, Fun, []});
@@ -918,7 +914,7 @@ perform_action(Req, {Permission, Fun, Args}) ->
                     check_bucket_uuid(Bucket, fun check_uuid/3, [Fun, Args], NewReq)
             end;
         auth_failure ->
-            require_auth(Req);
+            menelaus_util:require_auth(Req);
         forbidden ->
             menelaus_util:reply_json(Req, menelaus_web_rbac:forbidden_response(Permission), 403)
     end.
@@ -2449,9 +2445,16 @@ validate_settings_auto_failover(Enabled, Timeout, MaxNodes) ->
     end,
     case Enabled2 of
         true ->
-            Errors = [is_valid_positive_integer_in_range(Timeout, ?AUTO_FAILLOVER_MIN_TIMEOUT, ?AUTO_FAILLOVER_MAX_TIMEOUT) orelse
+            MinTimeout = case cluster_compat_mode:is_cluster_spock() andalso
+                             cluster_compat_mode:is_enterprise() of
+                             true ->
+                                 ?AUTO_FAILLOVER_MIN_TIMEOUT;
+                             false ->
+                                 ?AUTO_FAILLOVER_MIN_CE_TIMEOUT
+                         end,
+            Errors = [is_valid_positive_integer_in_range(Timeout, MinTimeout, ?AUTO_FAILLOVER_MAX_TIMEOUT) orelse
                       {timeout, erlang:list_to_binary(io_lib:format("The value of \"timeout\" must be a positive integer in a range from ~p to ~p",
-                                                                                [?AUTO_FAILLOVER_MIN_TIMEOUT, ?AUTO_FAILLOVER_MAX_TIMEOUT]))},
+                                                                    [MinTimeout, ?AUTO_FAILLOVER_MAX_TIMEOUT]))},
                       is_valid_positive_integer(MaxNodes) orelse
                       {maxNodes, <<"The value of \"maxNodes\" must be a positive integer">>}],
             case lists:filter(fun (E) -> E =/= true end, Errors) of

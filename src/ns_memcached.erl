@@ -38,7 +38,6 @@
 -define(VBUCKET_POLL_INTERVAL, 100).
 -define(EVAL_TIMEOUT, ns_config:get_timeout(ns_memcached_eval, 120000)).
 -define(TIMEOUT, ns_config:get_timeout(ns_memcached_outer, 180000)).
--define(TIMEOUT_OPEN_CHECKPOINT, ns_config:get_timeout(ns_memcached_open_checkpoint, 180000)).
 -define(TIMEOUT_HEAVY, ns_config:get_timeout(ns_memcached_outer_heavy, 180000)).
 -define(TIMEOUT_VERY_HEAVY, ns_config:get_timeout(ns_memcached_outer_very_heavy, 360000)).
 -define(CONNECTED_TIMEOUT, ns_config:get_timeout(ns_memcached_connected, 5000)).
@@ -79,8 +78,6 @@
 
 %% external API
 -export([active_buckets/0,
-         backfilling/1,
-         backfilling/2,
          connected/2,
          connected/3,
          warmed/2,
@@ -108,9 +105,7 @@
          topkeys/1,
          raw_stats/5,
          sync_bucket_config/1,
-         deregister_tap_client/2,
          flush/1,
-         get_vbucket_open_checkpoint/3,
          set/4,
          ready_nodes/4,
          sync/4, add/4, get/3, delete/3, delete/4,
@@ -120,12 +115,8 @@
          get_seqno_stats/2,
          connect_and_send_isasl_refresh/0,
          connect_and_send_ssl_certs_refresh/0,
-         get_vbucket_checkpoint_ids/2,
-         create_new_checkpoint/2,
+         connect_and_send_rbac_refresh/0,
          eval/2,
-         wait_for_checkpoint_persistence/3,
-         get_tap_docs_estimate/3,
-         get_mass_tap_docs_estimate/2,
          get_mass_dcp_docs_estimate/2,
          get_dcp_docs_estimate/3,
          set_cluster_config/2,
@@ -353,7 +344,6 @@ assign_queue({delete_vbucket, _}) -> #state.very_heavy_calls_queue;
 assign_queue({sync_delete_vbucket, _}) -> #state.very_heavy_calls_queue;
 assign_queue(flush) -> #state.very_heavy_calls_queue;
 assign_queue({set_vbucket, _, _}) -> #state.heavy_calls_queue;
-assign_queue({deregister_tap_client, _}) -> #state.heavy_calls_queue;
 assign_queue({add, _Key, _VBucket, _Value}) -> #state.heavy_calls_queue;
 assign_queue({get, _Key, _VBucket}) -> #state.heavy_calls_queue;
 assign_queue({get_from_replica, _Key, _VBucket}) -> #state.heavy_calls_queue;
@@ -361,7 +351,6 @@ assign_queue({delete, _Key, _VBucket, _CAS}) -> #state.heavy_calls_queue;
 assign_queue({set, _Key, _VBucket, _Value}) -> #state.heavy_calls_queue;
 assign_queue({get_keys, _VBuckets, _Params}) -> #state.heavy_calls_queue;
 assign_queue({sync, _Key, _VBucket, _CAS}) -> #state.very_heavy_calls_queue;
-assign_queue({get_mass_tap_docs_estimate, _VBuckets}) -> #state.very_heavy_calls_queue;
 assign_queue({get_mass_dcp_docs_estimate, _VBuckets}) -> #state.very_heavy_calls_queue;
 assign_queue(_) -> #state.fast_calls_queue.
 
@@ -451,23 +440,6 @@ do_handle_call({raw_stats, SubStat, StatsFun, StatsFunState}, _From, State) ->
     catch T:E ->
             {reply, {exception, {T, E}}, State}
     end;
-do_handle_call(backfilling, _From, State) ->
-    End = <<":pending_backfill">>,
-    ES = byte_size(End),
-    {ok, Reply} = mc_binary:quick_stats(
-                    State#state.sock, <<"tap">>,
-                    fun (<<"eq_tapq:", K/binary>>, <<"true">>, Acc) ->
-                            S = byte_size(K) - ES,
-                            case K of
-                                <<_:S/binary, End/binary>> ->
-                                    true;
-                                _ ->
-                                    Acc
-                            end;
-                        (_, _, Acc) ->
-                            Acc
-                    end, false),
-    {reply, Reply, State};
 do_handle_call({delete_vbucket, VBucket}, _From, #state{sock=Sock} = State) ->
     case mc_client_binary:delete_vbucket(Sock, VBucket) of
         ok ->
@@ -536,12 +508,6 @@ do_handle_call({set, Key, VBucket, Val}, _From, State) ->
                                   #mc_entry{key = Key, data = Val}}),
     {reply, Reply, State};
 
-do_handle_call({create_new_checkpoint, VBucket},
-            _From, State) ->
-    Reply = mc_client_binary:create_new_checkpoint(State#state.sock, VBucket),
-    {reply, Reply, State};
-
-
 do_handle_call({add, Key, VBucket, Val}, _From, State) ->
     Reply = mc_client_binary:cmd(?ADD, State#state.sock, undefined, undefined,
                                  {#mc_header{vbucket = VBucket},
@@ -577,10 +543,6 @@ do_handle_call({set_vbucket, VBucket, VBState}, _From,
 do_handle_call({stats, Key}, _From, State) ->
     Reply = mc_binary:quick_stats(State#state.sock, Key, fun mc_binary:quick_stats_append/3, []),
     {reply, Reply, State};
-do_handle_call({get_tap_docs_estimate, VBucketId, TapName}, _From, State) ->
-    {reply, mc_client_binary:get_tap_docs_estimate(State#state.sock, VBucketId, TapName), State};
-do_handle_call({get_mass_tap_docs_estimate, VBuckets}, _From, State) ->
-    {reply, mc_client_binary:get_mass_tap_docs_estimate(State#state.sock, VBuckets), State};
 do_handle_call({get_dcp_docs_estimate, VBucketId, ConnName}, _From, State) ->
     {reply, mc_client_binary:get_dcp_docs_estimate(State#state.sock, VBucketId, ConnName), State};
 do_handle_call({get_mass_dcp_docs_estimate, VBuckets}, _From, State) ->
@@ -601,9 +563,6 @@ do_handle_call(topkeys, _From, State) ->
               end,
               []),
     {reply, Reply, State};
-do_handle_call({deregister_tap_client, TapName}, _From, State) ->
-    mc_client_binary:deregister_tap_client(State#state.sock, TapName),
-    {reply, ok, State};
 do_handle_call({eval, Fn, Ref}, _From, #state{sock=Sock} = State) ->
     try
         R = Fn(Sock),
@@ -613,24 +572,6 @@ do_handle_call({eval, Fn, Ref}, _From, #state{sock=Sock} = State) ->
             {compromised_reply,
              {thrown, Ref, T, E, erlang:get_stacktrace()}, State}
     end;
-do_handle_call({get_vbucket_checkpoint_ids, VBucketId}, _From, State) ->
-    Res = mc_binary:quick_stats(
-            State#state.sock, iolist_to_binary([<<"checkpoint ">>, integer_to_list(VBucketId)]),
-            fun (K, V, {PersistedAcc, OpenAcc} = Acc) ->
-                    case misc:is_binary_ends_with(K, <<":persisted_checkpoint_id">>) of
-                        true ->
-                            {list_to_integer(binary_to_list(V)), OpenAcc};
-                        _->
-                            case misc:is_binary_ends_with(K, <<":open_checkpoint_id">>) of
-                                true ->
-                                    {PersistedAcc, list_to_integer(binary_to_list(V))};
-                                _ ->
-                                    Acc
-                            end
-                    end
-            end,
-            {undefined, undefined}),
-    {reply, Res, State};
 do_handle_call(get_random_key, _From, State) ->
     {reply, mc_client_binary:get_random_key(State#state.sock), State};
 do_handle_call({get_vbucket_high_seqno, VBucketId}, _From, State) ->
@@ -727,16 +668,18 @@ handle_cast(start_completed, #state{start_time=Start,
 handle_info(check_started, #state{status=Status} = State)
   when Status =:= connected orelse Status =:= warmed ->
     {noreply, State};
-handle_info(check_started, #state{timer=Timer, sock=Sock} = State) ->
+handle_info(check_started,
+            #state{timer=Timer, bucket=Bucket, sock=Sock} = State) ->
     Stats = retrieve_warmup_stats(Sock),
-    case has_started(Stats) of
+    case has_started(Stats, Bucket) of
         true ->
             {ok, cancel} = timer2:cancel(Timer),
             misc:flush(check_started),
             Pid = self(),
             proc_lib:spawn_link(
               fun () ->
-                      ns_config_isasl_sync:sync(),
+                      memcached_passwords:sync(),
+                      memcached_permissions:sync(),
 
                       gen_server:cast(Pid, start_completed),
                       %% we don't want exit signal in parent's message
@@ -1000,13 +943,6 @@ update_with_rev(Bucket, VBucket, Id, Value, Rev, Deleted, LocalCAS) ->
                         Sock, VBucket, Id, Value, Rev, Deleted, LocalCAS)}
       end, Bucket).
 
--spec create_new_checkpoint(bucket_name(), vbucket_id()) ->
-    {ok, Checkpoint::integer(), Checkpoint::integer()} | mc_error().
-create_new_checkpoint(Bucket, VBucket) ->
-    do_call(server(Bucket),
-            {create_new_checkpoint, VBucket},
-            ?TIMEOUT_HEAVY).
-
 eval(Bucket, Fn) ->
     Ref = make_ref(),
     case do_call(server(Bucket), {eval, Fn, Ref}, ?EVAL_TIMEOUT) of
@@ -1022,19 +958,6 @@ eval(Bucket, Fn) ->
 sync(Bucket, Key, VBucket, CAS) ->
     do_call({server(Bucket), node()},
             {sync, Key, VBucket, CAS}, ?TIMEOUT_VERY_HEAVY).
-
-%% @doc Returns true if backfill is running on this node for the given bucket.
--spec backfilling(bucket_name()) ->
-                         boolean().
-backfilling(Bucket) ->
-    backfilling(node(), Bucket).
-
-%% @doc Returns true if backfill is running on the given node for the given
-%% bucket.
--spec backfilling(node(), bucket_name()) ->
-                         boolean().
-backfilling(Node, Bucket) ->
-    do_call({server(Bucket), Node}, backfilling, ?TIMEOUT).
 
 %% @doc Delete a vbucket. Will set the vbucket to dead state if it
 %% isn't already, blocking until it successfully does so.
@@ -1164,12 +1087,6 @@ warmup_stats(Bucket) ->
 sync_bucket_config(Bucket) ->
     do_call(server(Bucket), sync_bucket_config, infinity).
 
--spec deregister_tap_client(Bucket::bucket_name(),
-                            TapName::binary()) -> ok.
-deregister_tap_client(Bucket, TapName) ->
-    do_call(server(Bucket), {deregister_tap_client, TapName}).
-
-
 -spec topkeys(bucket_name()) ->
                      {ok, [{nonempty_string(), [{atom(), integer()}]}]} |
                      mc_error().
@@ -1182,40 +1099,6 @@ raw_stats(Node, Bucket, SubStats, Fn, FnState) ->
     do_call({ns_memcached:server(Bucket), Node},
             {raw_stats, SubStats, Fn, FnState}, ?TIMEOUT).
 
-
--spec get_vbucket_open_checkpoint(Nodes::[node()],
-                           Bucket::bucket_name(),
-                           VBucketId::vbucket_id()) -> [{node(), integer() | missing}].
-get_vbucket_open_checkpoint(Nodes, Bucket, VBucketId) ->
-    StatName = <<"vb_", (iolist_to_binary(integer_to_list(VBucketId)))/binary, ":open_checkpoint_id">>,
-    {OkNodes, BadNodes} = gen_server:multi_call(Nodes, server(Bucket), {stats, <<"checkpoint">>}, ?TIMEOUT_OPEN_CHECKPOINT),
-    case BadNodes of
-        [] -> ok;
-        _ ->
-            ?log_error("Some nodes failed checkpoint stats call: ~p", [BadNodes])
-    end,
-    [begin
-         PList = case proplists:get_value(N, OkNodes) of
-                     {ok, Good} -> Good;
-                     undefined ->
-                         [];
-                     Bad ->
-                         ?log_error("checkpoints stats call on ~p returned bad value: ~p", [N, Bad]),
-                         []
-                 end,
-         Value = case proplists:get_value(StatName, PList) of
-                     undefined ->
-                         missing;
-                     Value0 ->
-                         list_to_integer(binary_to_list(Value0))
-                 end,
-         {N, Value}
-     end || N <- Nodes].
-
--spec get_vbucket_checkpoint_ids(bucket_name(), vbucket_id()) ->
-                                        {ok, {undefined | checkpoint_id(), undefined | checkpoint_id()}}.
-get_vbucket_checkpoint_ids(Bucket, VBucketId) ->
-    do_call(server(Bucket), {get_vbucket_checkpoint_ids, VBucketId}, ?TIMEOUT).
 
 -spec get_vbucket_high_seqno(bucket_name(), vbucket_id()) ->
                                         {ok, {undefined | seq_no()}}.
@@ -1260,6 +1143,18 @@ connect_and_send_ssl_certs_refresh() ->
         {ok, Sock} ->
             try
                 ok = mc_client_binary:refresh_ssl_certs(Sock)
+            after
+                gen_tcp:close(Sock)
+            end;
+        Error ->
+            Error
+    end.
+
+connect_and_send_rbac_refresh() ->
+    case connect(1) of
+        {ok, Sock}  ->
+            try
+                ok = mc_client_binary:refresh_rbac(Sock)
             after
                 gen_tcp:close(Sock)
             end;
@@ -1471,10 +1366,35 @@ server(Bucket) ->
 retrieve_warmup_stats(Sock) ->
     mc_client_binary:stats(Sock, <<"warmup">>, fun (K, V, Acc) -> [{K, V}|Acc] end, []).
 
-has_started({memcached_error, key_enoent, _}) ->
+simulate_slow_warmup(Bucket) ->
+    TestCondition = {ep_slow_bucket_warmup, Bucket},
+    case testconditions:get(TestCondition) of
+        false ->
+            false;
+        0 ->
+            false;
+        Delay ->
+            NewDelay = case Delay =< ?CHECK_WARMUP_INTERVAL of
+                           true ->
+                               0;
+                           _ ->
+                               Delay - ?CHECK_WARMUP_INTERVAL
+                       end,
+            ?log_debug("Simulating slow warmup of bucket ~p. Pending delay ~p seconds", [Bucket, Delay/1000]),
+            testconditions:set(TestCondition, NewDelay),
+            true
+    end.
+has_started({memcached_error, key_enoent, _}, _) ->
     %% this is memcached bucket, warmup is done :)
     true;
-has_started({ok, WarmupStats}) ->
+has_started(Stats, Bucket) ->
+    case simulate_slow_warmup(Bucket) of
+        false ->
+            has_started_inner(Stats);
+        true ->
+            false
+    end.
+has_started_inner({ok, WarmupStats}) ->
     case lists:keyfind(<<"ep_warmup_thread">>, 1, WarmupStats) of
         {_, <<"complete">>} ->
             true;
@@ -1503,9 +1423,6 @@ do_call(Server, Msg, Timeout) ->
         end
     end.
 
-do_call(Server, Msg) ->
-    do_call(Server, Msg, 5000).
-
 handle_connected_result(R, NewRespFn) ->
     case is_list(R) of
         %% new nodes will return a proplist to us
@@ -1529,13 +1446,6 @@ extract_new_response_warmed(Resp) when is_list(Resp) ->
 disable_traffic(Bucket, Timeout) ->
     gen_server:call(server(Bucket), disable_traffic, Timeout).
 
--spec wait_for_checkpoint_persistence(bucket_name(), vbucket_id(), checkpoint_id()) -> ok | mc_error().
-wait_for_checkpoint_persistence(Bucket, VBucketId, CheckpointId) ->
-    perform_very_long_call(
-      fun (Sock) ->
-              {reply, mc_client_binary:wait_for_checkpoint_persistence(Sock, VBucketId, CheckpointId)}
-      end, Bucket).
-
 -spec wait_for_seqno_persistence(bucket_name(), vbucket_id(), seq_no()) -> ok | mc_error().
 wait_for_seqno_persistence(Bucket, VBucketId, SeqNo) ->
     perform_very_long_call(
@@ -1553,14 +1463,6 @@ compact_vbucket(Bucket, VBucket, {PurgeBeforeTS, PurgeBeforeSeqNo, DropDeletes})
                                                        PurgeBeforeTS, PurgeBeforeSeqNo, DropDeletes)}
       end, Bucket).
 
-
--spec get_tap_docs_estimate(bucket_name(), vbucket_id(), binary()) ->
-                                   {ok, {non_neg_integer(), non_neg_integer(), binary()}}.
-get_tap_docs_estimate(Bucket, VBucketId, TapName) ->
-    do_call(server(Bucket), {get_tap_docs_estimate, VBucketId, TapName}, ?TIMEOUT).
-
-get_mass_tap_docs_estimate(Bucket, VBuckets) ->
-    do_call(server(Bucket), {get_mass_tap_docs_estimate, VBuckets}, ?TIMEOUT_VERY_HEAVY).
 
 -spec get_dcp_docs_estimate(bucket_name(), vbucket_id(), string()) ->
                                    {ok, {non_neg_integer(), non_neg_integer(), binary()}}.

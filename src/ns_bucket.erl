@@ -36,9 +36,8 @@
          get_bucket/2,
          get_bucket_names/0,
          get_bucket_names/1,
-         get_bucket_names_of_type/1,
          get_bucket_names_of_type/2,
-         couchbase_bucket_exists/1,
+         get_bucket_names_of_type/3,
          get_buckets/0,
          get_buckets/1,
          is_persistent/1,
@@ -61,6 +60,7 @@
          ram_quota/1,
          conflict_resolution_type/1,
          drift_thresholds/1,
+         storage_mode/1,
          raw_ram_quota/1,
          sasl_password/1,
          set_bucket_config/2,
@@ -70,17 +70,16 @@
          set_servers/2,
          filter_ready_buckets/1,
          update_bucket_props/2,
-         update_bucket_props/3,
+         update_bucket_props/4,
          node_bucket_names/1,
          node_bucket_names/2,
-         node_bucket_names_of_type/2,
          node_bucket_names_of_type/3,
+         node_bucket_names_of_type/4,
          all_node_vbuckets/1,
          update_vbucket_map_history/2,
          past_vbucket_maps/0,
          past_vbucket_maps/1,
          config_to_map_options/1,
-         needs_upgrade_to_dcp/1,
          needs_rebalance/2,
          bucket_view_nodes/1,
          bucket_view_nodes/2,
@@ -120,32 +119,25 @@ config_string(BucketName) ->
                 EvictionPolicy = proplists:get_value(eviction_policy, BucketConfig, value_only),
                 ConflictResolutionType = conflict_resolution_type(BucketConfig),
                 DriftThresholds = drift_thresholds(BucketConfig),
+                StorageMode = storage_mode(BucketConfig),
                 %% MemQuota is our per-node bucket memory limit
                 CFG =
                     io_lib:format(
                       "ht_size=~B;ht_locks=~B;"
-                      "tap_noop_interval=~B;"
                       "max_size=~B;"
-                      "tap_keepalive=~B;dbname=~s;"
+                      "dbname=~s;"
                       "backend=couchdb;couch_bucket=~s;max_vbuckets=~B;"
                       "alog_path=~s;data_traffic_enabled=false;max_num_workers=~B;"
                       "uuid=~s;item_eviction_policy=~s;"
-                      "conflict_resolution_type=~s",
+                      "conflict_resolution_type=~s;"
+                      "bucket_type=~s",
                       [proplists:get_value(
                          ht_size, BucketConfig,
                          misc:getenv_int("MEMBASE_HT_SIZE", 3079)),
                        proplists:get_value(
                          ht_locks, BucketConfig,
                          misc:getenv_int("MEMBASE_HT_LOCKS", 47)),
-                       proplists:get_value(
-                         tap_noop_interval, BucketConfig,
-                         misc:getenv_int("MEMBASE_TAP_NOOP_INTERVAL", 20)),
                        MemQuota,
-                       %% Five minutes, should be enough time for
-                       %% ebucketmigrator to restart.
-                       proplists:get_value(
-                         tap_keepalive, BucketConfig,
-                         misc:getenv_int("MEMBASE_TAP_KEEPALIVE", 300)),
                        DBSubDir,
                        BucketName,
                        NumVBuckets,
@@ -153,7 +145,8 @@ config_string(BucketName) ->
                        NumThreads,
                        BucketUUID,
                        EvictionPolicy,
-                       ConflictResolutionType]),
+                       ConflictResolutionType,
+                       storage_mode_to_bucket_type(StorageMode)]),
                 {CFG, {MemQuota, DBSubDir, NumThreads, EvictionPolicy,
                        DriftThresholds}, DBSubDir};
             memcached ->
@@ -170,18 +163,6 @@ config_string(BucketName) ->
 credentials(Bucket) ->
     {ok, BucketConfig} = get_bucket(Bucket),
     {Bucket, proplists:get_value(sasl_password, BucketConfig, "")}.
-
--spec couchbase_bucket_exists(binary()) -> boolean().
-couchbase_bucket_exists(Bucket) ->
-    case get_bucket(binary_to_list(Bucket)) of
-        {ok, Config} ->
-            case proplists:get_value(type, Config) of
-                membase -> true;
-                _ -> false
-            end;
-        not_present ->
-            false
-    end.
 
 get_bucket(Bucket) ->
     get_bucket(Bucket, ns_config:latest()).
@@ -229,12 +210,17 @@ get_bucket_names() ->
 get_bucket_names(BucketConfigs) ->
     proplists:get_keys(BucketConfigs).
 
-get_bucket_names_of_type(Type) ->
-    get_bucket_names_of_type(Type, get_buckets()).
+-spec get_bucket_names_of_type(memcached|membase,
+                               undefined|couchstore|ephemeral) -> list().
+get_bucket_names_of_type(Type, Mode) ->
+    get_bucket_names_of_type(Type, Mode, get_buckets()).
 
-get_bucket_names_of_type(Type, BucketConfigs) ->
+-spec get_bucket_names_of_type(memcached|membase,
+                               undefined|couchstore|ephemeral, list()) -> list().
+get_bucket_names_of_type(Type, Mode, BucketConfigs) ->
     [Name || {Name, Config} <- BucketConfigs,
-             proplists:get_value(type, Config) == Type].
+             bucket_type(Config) == Type,
+             storage_mode(Config) == Mode].
 
 get_buckets() ->
     get_buckets(ns_config:latest()).
@@ -263,6 +249,20 @@ drift_thresholds(BucketConfig) ->
         seqno ->
             undefined
     end.
+
+-spec storage_mode([{_,_}]) -> atom().
+storage_mode(BucketConfig) ->
+    case bucket_type(BucketConfig) of
+        memcached ->
+            undefined;
+        membase ->
+            proplists:get_value(storage_mode, BucketConfig, couchstore)
+    end.
+
+storage_mode_to_bucket_type(couchstore) ->
+    persistent;
+storage_mode_to_bucket_type(ephemeral) ->
+    ephemeral.
 
 %% returns bucket ram quota multiplied by number of nodes this bucket
 %% resides on. I.e. gives amount of ram quota that will be used by
@@ -453,18 +453,6 @@ bucket_nodes(Bucket) ->
 replication_type(Bucket) ->
     proplists:get_value(repl_type, Bucket, tap).
 
--spec needs_upgrade_to_dcp([{_,_}]) -> boolean().
-needs_upgrade_to_dcp(Bucket) ->
-    DefaultReplType = get_default_repl_type(),
-    case replication_type(Bucket) of
-        dcp ->
-            false;
-        DefaultReplType ->
-            false;
-        _ ->
-            true
-    end.
-
 json_map_from_config(LocalAddr, BucketConfig) ->
     Config = ns_config:get(),
     json_map_with_full_config(LocalAddr, BucketConfig, Config).
@@ -654,18 +642,6 @@ cleanup_bucket_props(Props) ->
         none -> lists:keydelete(sasl_password, 1, Props)
     end.
 
-get_default_repl_type() ->
-    case os:getenv("COUCHBASE_REPL_TYPE") of
-        "tap" ->
-            tap;
-        "upr" ->
-            dcp;
-        "dcp" ->
-            dcp;
-        _ ->
-            dcp
-    end.
-
 create_bucket(BucketType, BucketName, NewConfig) ->
     case validate_bucket_config(BucketName, NewConfig) of
         ok ->
@@ -674,7 +650,7 @@ create_bucket(BucketType, BucketName, NewConfig) ->
                                      NewConfig),
             MergedConfig1 = cleanup_bucket_props(MergedConfig0),
             BucketUUID = couch_uuids:random(),
-            MergedConfig = [{repl_type, get_default_repl_type()} |
+            MergedConfig = [{repl_type, dcp} |
                             [{uuid, BucketUUID} | MergedConfig1]],
             ns_config:update_sub_key(
               buckets, configs,
@@ -748,8 +724,9 @@ filter_ready_buckets(BucketInfos) ->
 %%
 %% If bucket with given name exists, but with different type, we
 %% should return {exit, {not_found, _}, _}
-update_bucket_props(Type, BucketName, Props) ->
-    case lists:member(BucketName, get_bucket_names_of_type(Type)) of
+update_bucket_props(Type, StorageMode, BucketName, Props) ->
+    case lists:member(BucketName,
+                      get_bucket_names_of_type(Type, StorageMode)) of
         true ->
             update_bucket_props(BucketName, Props);
         false ->
@@ -849,14 +826,18 @@ node_bucket_names(Node, BucketsConfigs) ->
 node_bucket_names(Node) ->
     node_bucket_names(Node, get_buckets()).
 
-node_bucket_names_of_type(Node, Type) ->
-    node_bucket_names_of_type(Node, Type, get_buckets()).
+-spec node_bucket_names_of_type(node(), memcached|membase,
+                                undefined|couchstore|ephemeral) -> list().
+node_bucket_names_of_type(Node, Type, Mode) ->
+    node_bucket_names_of_type(Node, Type, Mode, get_buckets()).
 
-node_bucket_names_of_type(Node, Type, BucketConfigs) ->
+-spec node_bucket_names_of_type(node(), memcached|membase,
+                                undefined|couchstore|ephemeral, list()) -> list().
+node_bucket_names_of_type(Node, Type, Mode, BucketConfigs) ->
     [B || {B, C} <- BucketConfigs,
           lists:member(Node, proplists:get_value(servers, C, [])),
-          bucket_type(C) =:= Type].
-
+          bucket_type(C) =:= Type,
+          storage_mode(C) =:= Mode].
 
 %% All the vbuckets (active or replica) on a node
 -spec all_node_vbuckets(term()) -> list(integer()).
@@ -914,7 +895,6 @@ needs_rebalance(BucketConfig, Nodes) ->
                 _ ->
                     Map = proplists:get_value(map, BucketConfig),
                     Map =:= undefined orelse
-                        ns_bucket:needs_upgrade_to_dcp(BucketConfig) orelse
                         lists:sort(Nodes) =/= lists:sort(Servers) orelse
                         ns_rebalancer:map_options_changed(BucketConfig) orelse
                         (ns_rebalancer:unbalanced(Map, BucketConfig) andalso

@@ -26,7 +26,7 @@
 -define(NS_LOG, "ns_log").
 
 get_current_version() ->
-    list_to_tuple(?VERSION_45).
+    list_to_tuple(?SPOCK_VERSION_NUM).
 
 ensure_data_dir() ->
     RawDir = path_config:component_path(data),
@@ -280,6 +280,7 @@ default() ->
            {static_config_string, "vb0=true"}]}]},
        {config_path, path_config:default_memcached_config_path()},
        {audit_file, ns_audit_cfg:default_audit_json_path()},
+       {rbac_file, filename:join(DataDir, "memcached.rbac")},
        {log_path, LogDir},
        %% Prefix of the log files within the log path that should be rotated.
        {log_prefix, "memcached.log"},
@@ -339,6 +340,7 @@ default() ->
 
         {verbosity, verbosity},
         {audit_file, {"~s", [audit_file]}},
+        {rbac_file, {"~s", [rbac_file]}},
         {dedupe_nmvb_maps, dedupe_nmvb_maps}
        ]}},
 
@@ -402,7 +404,7 @@ default() ->
      {{request_limit, rest}, undefined},
      {{request_limit, capi}, undefined},
      {drop_request_memory_threshold_mib, undefined},
-     {roles_definitions, menelaus_roles:preconfigured_roles()}].
+     {roles_definitions, menelaus_roles:preconfigured_roles_45()}].
 
 %% Recursively replace all strings in a hierarchy that start
 %% with a given Prefix with a ReplacementPrefix.  For example,
@@ -426,6 +428,8 @@ prefix_replace(_Prefix, _ReplacementPrefix, X) -> X.
 %% to handle vclock updates
 -spec upgrade_config([[{term(), term()}]]) -> [{set, term(), term()}].
 upgrade_config(Config) ->
+    assert_no_tap_buckets(Config),
+
     CurrentVersion = get_current_version(),
     case ns_config:search_node(node(), Config, config_version) of
         {value, CurrentVersion} ->
@@ -443,8 +447,11 @@ upgrade_config(Config) ->
             [{set, {node, node(), config_version}, {4,1,1}} |
              upgrade_config_from_4_0_to_4_1_1(Config)];
         {value, {4,1,1}} ->
-            [{set, {node, node(), config_version}, CurrentVersion} |
+            [{set, {node, node(), config_version}, {4,5}} |
              upgrade_config_from_4_1_1_to_4_5()];
+        {value, {4,5}} ->
+            [{set, {node, node(), config_version}, CurrentVersion} |
+             upgrade_config_from_4_5_to_spock(Config)];
         V0 ->
             OldVersion =
                 case V0 of
@@ -457,6 +464,16 @@ upgrade_config(Config) ->
             ?log_error("Detected an attempt to offline upgrade "
                        "from unsupported version ~p. Terminating.", [OldVersion]),
             catch ale:sync_all_sinks(),
+            misc:halt(1)
+    end.
+
+assert_no_tap_buckets(Config) ->
+    case cluster_compat_mode:have_non_dcp_buckets(Config) of
+        false ->
+            ok;
+        {true, BadBuckets} ->
+            ?log_error("Can't offline upgrade since there're non-dcp buckets: ~p",
+                       [BadBuckets]),
             misc:halt(1)
     end.
 
@@ -567,6 +584,24 @@ do_upgrade_config_from_4_1_1_to_4_5(DefaultConfig) ->
     [{set, ConfKey, McdConfig},
      {set, DefaultsKey, McdDefaults},
      {set, CompactionDaemonKey, CompactionDaemonCfg}].
+
+upgrade_config_from_4_5_to_spock(Config) ->
+    do_upgrade_config_from_4_5_to_spock(Config, default()).
+
+do_upgrade_config_from_4_5_to_spock(Config, DefaultConfig) ->
+    McdKey = {node, node(), memcached},
+    {value, CurrentMcdConfig} = ns_config:search(Config, McdKey),
+    {value, DefaultMcdConfig} = ns_config:search([DefaultConfig], McdKey),
+    RBACFileTupleMcd = {rbac_file, _} = lists:keyfind(rbac_file, 1, DefaultMcdConfig),
+
+    NewMcdConfig = lists:keystore(rbac_file, 1, CurrentMcdConfig, RBACFileTupleMcd),
+
+    JTKey = {node, node(), memcached_config},
+    {value, DefaultJsonTemplateConfig} = ns_config:search([DefaultConfig], JTKey),
+
+
+    [{set, McdKey, NewMcdConfig},
+     {set, JTKey, DefaultJsonTemplateConfig}].
 
 encrypt_config_val(Val) ->
     {ok, Encrypted} = encryption_service:encrypt(term_to_binary(Val)),
@@ -701,6 +736,20 @@ upgrade_4_1_1_to_4_5_test() ->
                   {set, {node, _, memcached_defaults}, memcached_defaults},
                   {set, {node, _, compaction_daemon}, compaction_daemon_config}],
                  do_upgrade_config_from_4_1_1_to_4_5(Default)).
+
+upgrade_4_5_to_spock_test() ->
+    Cfg = [[{some_key, some_value},
+            {{node, node(), memcached},
+             [{old, info}]},
+            {{node, node(), memcached_config}, old_memcached_config}]],
+    Default = [{{node, node(), memcached}, [{some, stuff},
+                                            {rbac_file, rbac_file_path}]},
+               {{node, node(), memcached_config}, new_memcached_config}],
+
+    ?assertMatch([{set, {node, _, memcached}, [{old, info},
+                                               {rbac_file, rbac_file_path}]},
+                  {set, {node, _, memcached_config}, new_memcached_config}],
+                 do_upgrade_config_from_4_5_to_spock(Cfg, Default)).
 
 no_upgrade_on_current_version_test() ->
     ?assertEqual([], upgrade_config([[{{node, node(), config_version}, get_current_version()}]])).

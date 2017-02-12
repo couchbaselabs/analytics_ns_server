@@ -4,8 +4,10 @@
 
 -export([start/0, setup_body_tramp/0,
          restart_port_by_name/1, restart_moxi/0, restart_memcached/0,
-         restart_xdcr_proxy/0, sync/0, create_erl_node_spec/4,
+         restart_xdcr_proxy/0, restart_fts/0, sync/0, create_erl_node_spec/4,
          create_goxdcr_upgrade_spec/1, shutdown_ports/0]).
+
+-export([run_cbsasladm/1]).
 
 start() ->
     proc_lib:start_link(?MODULE, setup_body_tramp, []).
@@ -60,6 +62,10 @@ restart_xdcr_proxy() ->
         Error ->
             Error
     end.
+
+restart_fts() ->
+    {ok, _} = restart_port_by_name(fts),
+    ok.
 
 restart_port_by_name(Name) ->
     ns_ports_manager:restart_port_by_name(ns_server:get_babysitter_node(), Name).
@@ -581,8 +587,7 @@ memcached_spec(Config) ->
                     %% not too small number which means that we'll deal
                     %% with 40 top keys.
                     {"MEMCACHED_TOP_KEYS", "5"},
-                    {"ISASL_PWFILE", {"~s", [{isasl, path}]}}] ++
-                  ns_config_isasl_sync:get_secrets_env_var()},
+                    {"CBSASL_PWFILE", {"~s", [{isasl, path}]}}]},
              use_stdio,
              stderr_to_stdout, exit_status,
              port_server_dont_start,
@@ -701,3 +706,13 @@ example_service_spec(Config) ->
         false ->
             []
     end.
+
+run_cbsasladm(Iterations) ->
+    [{cbsasladm, Cmd, [], Opts}] =
+        run_via_goport(fun (_) ->
+                               [{cbsasladm, find_executable("cbsasladm"),
+                                 ["-i", integer_to_list(Iterations), "pwconv", "-", "-"],
+                                 [use_stdio, exit_status, stream]}]
+                       end, undefined),
+    Opts1 = [{args, ["-graceful-shutdown", "-proxy-stdin"]} | Opts],
+    open_port({spawn_executable, Cmd}, Opts1).

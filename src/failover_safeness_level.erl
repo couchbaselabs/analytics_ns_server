@@ -18,12 +18,12 @@
 %% of time required to replicate backlog of un-replicated yet items.
 %%
 %% The approach is to subscribe to stats and keep moving averages of
-%% replication tap streams backlog and replication tap streams drain
+%% replication streams backlog and replication streams drain
 %% rate. After each new sample we update averages and compute
-%% estimated time to drain all replication backlog. If that estimate is
-%% higher then 2000 ms we switch to 'yellow' level. Switching back to
-%% green has much lower bound to avoid too frequent changing of levels
-%% (i.e. hysteresis).
+%% estimated time to drain all replication backlog. If that estimate
+%% is higher then 2000 ms we switch to 'yellow' level. Switching back
+%% to green has much lower bound to avoid too frequent changing of
+%% levels (i.e. hysteresis).
 %%
 %% We also keep track of last time we've seen any stats sample. And we
 %% use it when asked about current safeness level. If our information
@@ -57,7 +57,6 @@
 
 -record(state,
         {bucket_name :: bucket_name(),
-         tap_info :: #safeness_info{},
          dcp_info :: #safeness_info{},
          last_ts :: undefined | non_neg_integer(),
          last_update_local_clock :: non_neg_integer()
@@ -81,7 +80,6 @@ get_value(BucketName) ->
 
 init([BucketName]) ->
     {ok, #state{bucket_name = BucketName,
-                tap_info = #safeness_info{},
                 dcp_info = #safeness_info{},
                 last_update_local_clock = misc:time_to_epoch_ms_int(now())}}.
 
@@ -90,25 +88,8 @@ code_change(_OldVsn, State, _) -> {ok, State}.
 
 handle_event({stats, StatsBucket, #stat_entry{timestamp = TS, values = Values}},
              #state{bucket_name = StatsBucket,
-                    tap_info = TapInfo,
                     dcp_info = DcpInfo,
                     last_ts = LastTS} = State) ->
-    TapBacklogSize =
-        case {orddict:find(ep_tap_replica_queue_backfillremaining, Values),
-              orddict:find(ep_tap_replica_qlen, Values)} of
-            {{ok, BackfillRemaining}, {ok, Qlen}} ->
-                {ok, BackfillRemaining + Qlen};
-            _ ->
-                false
-        end,
-
-    NewTapInfo =
-         new_safeness_info(TapBacklogSize,
-                           orddict:find(ep_tap_replica_queue_drain, Values),
-                           TS,
-                           LastTS,
-                           TapInfo),
-
     NewDcpInfo =
          new_safeness_info(orddict:find(ep_dcp_replica_items_remaining, Values),
                            orddict:find(ep_dcp_replica_items_sent, Values),
@@ -117,7 +98,6 @@ handle_event({stats, StatsBucket, #stat_entry{timestamp = TS, values = Values}},
                            DcpInfo),
 
     {ok, State#state{last_ts = TS,
-                     tap_info = NewTapInfo,
                      dcp_info = NewDcpInfo,
                      last_update_local_clock = misc:time_to_epoch_ms_int(now())}};
 
@@ -188,24 +168,14 @@ new_safeness_info({ok, BacklogSize}, {ok, DrainRate}, TS, LastTS,
 new_safeness_info(_, _, _, _, Info) ->
     Info.
 
-pick_level(unknown, _) ->
-    unknown;
-pick_level(_, unknown) ->
-    unknown;
-pick_level(green, green) ->
-    green;
-pick_level(_, _) ->
-    yellow.
-
 handle_call(get_level, #state{last_update_local_clock = UpdateTS,
-                              tap_info = #safeness_info{safeness_level = TapLevel},
                               dcp_info = #safeness_info{safeness_level = DcpLevel}} = State) ->
     Now = misc:time_to_epoch_ms_int(now()),
     RV = case Now - UpdateTS > ?STALENESS_THRESHOLD of
              true ->
                  stale;
              _ ->
-                 pick_level(TapLevel, DcpLevel)
+                 DcpLevel
          end,
     {ok, {ok, RV}, State};
 handle_call(get_state, State) ->
@@ -239,7 +209,7 @@ build_local_safeness_info(BucketNames) ->
 %% build_local_safeness_info/1 from all replica nodes.
 %%
 %% We check that all needed outgoing replications are there (with
-%% right vbuckets) and that tap producer stats of given node indicate
+%% right vbuckets) and that dcp producer stats of given node indicate
 %% that all outgoing replications from given node are reasonably up to
 %% date (see discussion of green/yellow levels at top of this
 %% file). So we actually use node statuses of all nodes (well, only

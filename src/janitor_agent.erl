@@ -39,7 +39,6 @@
                 last_applied_vbucket_states :: undefined | list(),
                 rebalance_only_vbucket_states :: list(),
                 flushseq,
-                rebalancer_type :: undefined | rebalancer | upgrader,
                 rebalance_status = finished :: in_process | finished,
                 replicators_primed :: boolean(),
 
@@ -53,7 +52,6 @@
          mark_bucket_warmed/2,
          delete_vbucket_copies/4,
          prepare_nodes_for_rebalance/3,
-         prepare_nodes_for_dcp_upgrade/3,
          finish_rebalance/3,
          this_node_replicator_triples/1,
          bulk_set_vbucket_state/4,
@@ -62,13 +60,8 @@
          get_src_dst_vbucket_replications/3,
          initiate_indexing/5,
          wait_index_updated/5,
-         create_new_checkpoint/4,
          mass_prepare_flush/2,
          complete_flush/3,
-         get_replication_persistence_checkpoint_id/4,
-         wait_checkpoint_persisted/5,
-         get_tap_docs_estimate_many_taps/4,
-         get_mass_tap_docs_estimate/3,
          get_dcp_docs_estimate/4,
          get_mass_dcp_docs_estimate/3,
          wait_dcp_data_move/5,
@@ -373,11 +366,6 @@ prepare_nodes_for_rebalance(Bucket, Nodes, RebalancerPid) ->
             Errors
     end.
 
-prepare_nodes_for_dcp_upgrade(Bucket, Nodes, RebalancerPid) ->
-    process_multicall_rv(gen_server:multi_call(Nodes, server_name(Bucket),
-                                               {prepare_dcp_upgrade, RebalancerPid},
-                                               ?PREPARE_REBALANCE_TIMEOUT)).
-
 finish_rebalance(Bucket, Nodes, RebalancerPid) ->
     process_multicall_rv(gen_server:multi_call(Nodes, server_name(Bucket),
                                                {if_rebalance, RebalancerPid, finish_rebalance},
@@ -463,17 +451,6 @@ dcp_takeover(Bucket, Rebalancer, OldMasterNode, NewMasterNode, VBucket) ->
                     {if_rebalance, Rebalancer,
                      {dcp_takeover, OldMasterNode, VBucket}}, infinity).
 
-%% returns checkpoint id which 100% contains all currently persisted
-%% docs. Normally it's persisted_checkpoint_id + 1 (assuming
-%% checkpoint after persisted one has some stuff persisted already)
-get_replication_persistence_checkpoint_id(Bucket, Rebalancer, MasterNode, VBucket) ->
-    ?rebalance_info("~s: Doing get_replication_persistence_checkpoint_id call for vbucket ~p on ~s", [Bucket, VBucket, MasterNode]),
-    RV = gen_server:call(server_name(Bucket, MasterNode),
-                         {if_rebalance, Rebalancer, {get_replication_persistence_checkpoint_id, VBucket}},
-                         infinity),
-    true = is_integer(RV),
-    RV.
-
 get_vbucket_high_seqno(Bucket, Rebalancer, MasterNode, VBucket) ->
     ?rebalance_info("~s: Doing get_vbucket_high_seqno call for vbucket ~p on ~s",
                     [Bucket, VBucket, MasterNode]),
@@ -482,20 +459,6 @@ get_vbucket_high_seqno(Bucket, Rebalancer, MasterNode, VBucket) ->
                          infinity),
     true = is_integer(RV),
     RV.
-
--spec create_new_checkpoint(bucket_name(), pid(), node(), vbucket_id()) -> {checkpoint_id(), checkpoint_id()}.
-create_new_checkpoint(Bucket, Rebalancer, MasterNode, VBucket) ->
-    ?rebalance_info("~s: Doing create_new_checkpoint call for vbucket ~p on ~s", [Bucket, VBucket, MasterNode]),
-    {_PersistedCheckpointId, _OpenCheckpointId} =
-        gen_server:call(server_name(Bucket, MasterNode),
-                        {if_rebalance, Rebalancer, {create_new_checkpoint, VBucket}},
-                        infinity).
-
--spec wait_checkpoint_persisted(bucket_name(), pid(), node(), vbucket_id(), checkpoint_id()) -> ok.
-wait_checkpoint_persisted(Bucket, Rebalancer, Node, VBucket, WaitedCheckpointId) ->
-    ok = gen_server:call({server_name(Bucket), Node},
-                         {if_rebalance, Rebalancer, {wait_checkpoint_persisted, VBucket, WaitedCheckpointId}},
-                         infinity).
 
 -spec wait_seqno_persisted(bucket_name(), pid(), node(), vbucket_id(), seq_no()) -> ok.
 wait_seqno_persisted(Bucket, Rebalancer, Node, VBucket, SeqNo) ->
@@ -533,20 +496,6 @@ get_servant_call_reply({MRef, Tag}) ->
 
 do_servant_call(Server, Request) ->
     get_servant_call_reply(initiate_servant_call(Server, Request)).
-
--spec get_tap_docs_estimate_many_taps(bucket_name(), node(), vbucket_id(), [binary()]) ->
-                                             [{ok, {non_neg_integer(), non_neg_integer(), binary()}}].
-get_tap_docs_estimate_many_taps(Bucket, SrcNode, VBucket, TapNames) ->
-    do_servant_call({server_name(Bucket), SrcNode},
-                    {get_tap_docs_estimate_many_taps, VBucket, TapNames}).
-
-get_mass_tap_docs_estimate(_Bucket, _Node, []) ->
-    {ok, []};
-get_mass_tap_docs_estimate(Bucket, Node, VBuckets) ->
-    RV = do_servant_call({server_name(Bucket), Node},
-                         {get_mass_tap_docs_estimate, VBuckets}),
-    {ok, _} = RV,
-    RV.
 
 -spec get_dcp_docs_estimate(bucket_name(), node(), vbucket_id(), [node()]) ->
                                    [{ok, {non_neg_integer(), non_neg_integer(), binary()}}].
@@ -592,8 +541,7 @@ handle_call(prepare_flush, _From, #state{bucket_name = BucketName} = State) ->
 handle_call(complete_flush, _From, State) ->
     {reply, ok, consider_doing_flush(State)};
 handle_call(query_vbucket_states, _From, #state{bucket_name = BucketName,
-                                               rebalance_status = in_process,
-                                               rebalancer_type = rebalancer} = State) ->
+                                               rebalance_status = in_process} = State) ->
     ?log_info("Attempt to query vbucket states for bucket ~p during rebalance", [BucketName]),
     {reply, rebalancing, State};
 handle_call(query_vbucket_states, _From, #state{bucket_name = BucketName} = State) ->
@@ -624,15 +572,9 @@ handle_call({prepare_rebalance, _Pid}, _From,
 handle_call({prepare_rebalance, Pid}, _From,
             State) ->
     State1 = State#state{rebalance_only_vbucket_states =
-                             [undefined || _ <- State#state.rebalance_only_vbucket_states],
-                         rebalancer_type = rebalancer},
+                             [undefined || _ <- State#state.rebalance_only_vbucket_states]},
     {reply, {ok, [{version, cluster_compat_mode:mb_master_advertised_version()}]},
      set_rebalance_mref(Pid, State1)};
-
-handle_call({prepare_dcp_upgrade, Pid}, _From, #state{rebalance_pid = undefined} = State) ->
-    {reply, ok, set_rebalance_mref(Pid, State#state{rebalancer_type = upgrader})};
-handle_call({prepare_dcp_upgrade, _Pid}, _From, State) ->
-    {reply, unable_to_start_upgrade, State};
 
 handle_call(finish_rebalance, _From, State) ->
     {reply, ok, State#state{rebalance_status = finished}};
@@ -708,10 +650,7 @@ handle_call({apply_new_config, Caller, NewBucketConfig, IgnoredVBuckets}, _From,
                      set_rebalance_mref(undefined, State2)
              end,
 
-    %% make the replicator aware of the latest bucket replication type
-    %% this might shutdown some replications which will be restored later
-    ok = replication_manager:set_replication_type(BucketName,
-                                                  ns_bucket:replication_type(NewBucketConfig)),
+    dcp = ns_bucket:replication_type(NewBucketConfig),
 
     %% before changing vbucket states (i.e. activating or killing
     %% vbuckets) we must stop replications into those vbuckets
@@ -773,29 +712,6 @@ handle_call(initiate_indexing, From, #state{bucket_name = Bucket} = State) ->
                        ok = ns_couchdb_api:initiate_indexing(Bucket)
                end),
     {noreply, State2};
-handle_call({create_new_checkpoint, VBucket},
-            _From,
-            #state{bucket_name = Bucket} = State) ->
-    %% NOTE: this happens on current master of vbucket thus undefined
-    %% persisted checkpoint id should not be possible here
-    {ok, {PersistedCheckpointId, _}} = ns_memcached:get_vbucket_checkpoint_ids(Bucket, VBucket),
-    {ok, OpenCheckpointId, _LastPersistedCkpt} = ns_memcached:create_new_checkpoint(Bucket, VBucket),
-    {reply, {PersistedCheckpointId, OpenCheckpointId}, State};
-handle_call({wait_checkpoint_persisted, VBucket, CheckpointId},
-           From,
-           #state{bucket_name = Bucket} = State) ->
-    State2 = spawn_rebalance_subprocess(
-               State,
-               From,
-               fun () ->
-                       ?rebalance_debug("Going to wait for persistence of checkpoint ~B in vbucket ~B",
-                                        [CheckpointId, VBucket]),
-                       ok = do_wait_checkpoint_persisted(Bucket, VBucket, CheckpointId),
-                       ?rebalance_debug("Done waiting for persistence of checkpoint ~B in vbucket ~B",
-                                       [CheckpointId, VBucket]),
-                       ok
-               end),
-    {noreply, State2};
 handle_call({wait_seqno_persisted, VBucket, SeqNo},
            From,
            #state{bucket_name = Bucket} = State) ->
@@ -834,20 +750,6 @@ handle_call({uninhibit_view_compaction, Ref},
                        compaction_new_daemon:uninhibit_view_compaction(Bucket, Ref)
                end),
     {noreply, State2};
-handle_call({get_replication_persistence_checkpoint_id, VBucket},
-            _From,
-            #state{bucket_name = Bucket} = State) ->
-    %% NOTE: this happens on current master of vbucket thus undefined
-    %% persisted checkpoint id should not be possible here
-    {ok, {PersistedCheckpointId, OpenCheckpointId}} = ns_memcached:get_vbucket_checkpoint_ids(Bucket, VBucket),
-    case PersistedCheckpointId + 1 < OpenCheckpointId of
-        true ->
-            {reply, PersistedCheckpointId + 1, State};
-        false ->
-            {ok, NewOpenCheckpointId, _LastPersistedCkpt} = ns_memcached:create_new_checkpoint(Bucket, VBucket),
-            ?log_debug("After creating new checkpoint here's what we have: ~p (~p)", [{PersistedCheckpointId, OpenCheckpointId, NewOpenCheckpointId}, VBucket]),
-            {reply, erlang:min(PersistedCheckpointId + 1, NewOpenCheckpointId - 1), State}
-    end;
 handle_call({get_vbucket_high_seqno, VBucket},
             _From,
             #state{bucket_name = Bucket} = State) ->
@@ -855,19 +757,6 @@ handle_call({get_vbucket_high_seqno, VBucket},
     %% persisted seq no should not be possible here
     {ok, SeqNo} = ns_memcached:get_vbucket_high_seqno(Bucket, VBucket),
     {reply, SeqNo, State};
-handle_call({get_tap_docs_estimate_many_taps, _VBucketId, _TapName} = Req, From, State) ->
-    handle_call_via_servant(
-      From, State, Req,
-      fun ({_, VBucketId, TapNames}, #state{bucket_name = Bucket}) ->
-              [ns_memcached:get_tap_docs_estimate(Bucket, VBucketId, Name)
-               || Name <- TapNames]
-      end);
-handle_call({get_mass_tap_docs_estimate, VBucketsR}, From, State) ->
-    handle_call_via_servant(
-      From, State, VBucketsR,
-      fun (VBuckets, #state{bucket_name = Bucket}) ->
-              ns_memcached:get_mass_tap_docs_estimate(Bucket, VBuckets)
-      end);
 handle_call({get_dcp_docs_estimate, _VBucketId, _ReplicaNodes} = Req, From, State) ->
     handle_call_via_servant(
       From, State, Req,
@@ -910,8 +799,6 @@ handle_cast({apply_vbucket_state_reply, ReplyPid, Call, Reply},
 handle_cast(_, _State) ->
     erlang:error(cannot_do).
 
-handle_info({'DOWN', _MRef, _, _, _}, #state{rebalancer_type = upgrader} = State) ->
-    {noreply, set_rebalance_mref(undefined, State)};
 handle_info({'DOWN', MRef, _, Pid, Reason}, #state{rebalance_mref = RMRef,
                                                    last_applied_vbucket_states = WantedVBuckets} = State)
   when MRef =:= RMRef ->
@@ -976,8 +863,7 @@ set_rebalance_mref(Pid, State0) ->
         undefined ->
             ok;
         OldMRef ->
-            case State0#state.rebalance_status =:= in_process andalso
-                State0#state.rebalancer_type =:= rebalancer of
+            case State0#state.rebalance_status =:= in_process of
                 true ->
                     %% something went wrong. nuke replicator just in case
                     (catch dcp_sup:nuke(State0#state.bucket_name));
@@ -1095,14 +981,6 @@ save_flushseq(BucketName, ConfigFlushSeq) ->
     ?log_info("Saving new flushseq: ~p", [ConfigFlushSeq]),
     Cont = list_to_binary(integer_to_list(ConfigFlushSeq)),
     misc:atomic_write_file(flushseq_file_path(BucketName), Cont).
-
-do_wait_checkpoint_persisted(Bucket, VBucket, CheckpointId) ->
-    case ns_memcached:wait_for_checkpoint_persistence(Bucket, VBucket, CheckpointId) of
-        ok -> ok;
-        {memcached_error, etmpfail, _} ->
-            ?rebalance_debug("Got etmpfail waiting for checkpoint persistence. Will try again"),
-            do_wait_checkpoint_persisted(Bucket, VBucket, CheckpointId)
-    end.
 
 do_wait_seqno_persisted(Bucket, VBucket, SeqNo) ->
     case ns_memcached:wait_for_seqno_persistence(Bucket, VBucket, SeqNo) of

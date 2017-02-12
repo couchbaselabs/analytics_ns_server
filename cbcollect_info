@@ -18,6 +18,7 @@ import urllib
 import shutil
 import urlparse
 import errno
+from datetime import datetime, timedelta, tzinfo
 from StringIO import StringIO
 
 class AltExitC(object):
@@ -57,13 +58,52 @@ USAGE = """usage: %prog [options] output_file.zip
     %prog output_file.zip
     %prog -v output_file.zip"""
 
+# adapted from pytz
+class FixedOffsetTZ(tzinfo):
+    def __init__(self, minutes):
+        if abs(minutes) >= 1440:
+            raise ValueError("absolute offset is too large", minutes)
+        self._minutes = minutes
+        self._offset = timedelta(minutes=minutes)
+
+    def utcoffset(self, dt):
+        return self._offset
+
+    def dst(self, dt):
+        return timedelta(0)
+
+    def tzname(self, dt):
+        return None
+
+local_tz = FixedOffsetTZ(minutes=time.timezone / 60)
 log_stream = StringIO()
 
-def log(message, end = '\n'):
+log_line = None
+def buffer_log_line(message, new_line):
+    global log_line
+
+    line = log_line
+    if line is None:
+        now = datetime.now(tz=local_tz)
+        line = '[%s] ' % now.isoformat()
+
+    line += message
+    if new_line:
+        log_line = None
+        return line
+    else:
+        log_line = line
+        return None
+
+def log(message, new_line=True):
     global log_stream
 
-    message = message + end
-    log_stream.write(message)
+    if new_line:
+        message += '\n'
+
+    bufline = buffer_log_line(message, new_line)
+    if bufline is not None:
+        log_stream.write(bufline)
 
     sys.stderr.write(message)
     sys.stderr.flush()
@@ -271,7 +311,7 @@ class TaskRunner(object):
     def _run(self, task):
         """Run a task with a file descriptor corresponding to its log file"""
         if task.will_run():
-            log("%s (%s) - " % (task.description, task.command_to_print), end='')
+            log("%s (%s) - " % (task.description, task.command_to_print), new_line=False)
             if task.privileged and os.getuid() != 0:
                 log("skipped (needs root privs)")
                 return
@@ -285,7 +325,7 @@ class TaskRunner(object):
 
             for i in xrange(task.num_samples):
                 if i > 0:
-                    log("Taking sample %d after %f seconds - " % (i+1, task.interval), end='')
+                    log("Taking sample %d after %f seconds - " % (i+1, task.interval), new_line=False)
                     time.sleep(task.interval)
                 result = task.execute(fp)
                 self.log_result(result)
@@ -583,7 +623,7 @@ def make_os_tasks():
         LinuxTask("Relevant proc data", "echo %(programs)s | "
                   "xargs -n1 pgrep | xargs -n1 -- sh -c 'echo $1; cat /proc/$1/status; cat /proc/$1/limits; cat /proc/$1/smaps; cat /proc/$1/numa_maps; cat /proc/$1/task/*/sched; echo' --" % locals()),
         LinuxTask("Processes' environment", "echo %(programs)s | "
-                  r"xargs -n1 pgrep | xargs -n1 -- sh -c 'echo $1; ( cat /proc/$1/environ | tr \\0 \\n | egrep -v ^CB_MASTER_PASSWORD=\|^COUCHBASE_CBSASL_SECRETS=\|^CBAUTH_REVRPC_URL=); echo' --" % locals()),
+                  r"xargs -n1 pgrep | xargs -n1 -- sh -c 'echo $1; ( cat /proc/$1/environ | tr \\0 \\n | egrep -v ^CB_MASTER_PASSWORD=\|^CBAUTH_REVRPC_URL=); echo' --" % locals()),
         LinuxTask("NUMA data", "numactl --hardware"),
         LinuxTask("NUMA data", "numactl --show"),
         LinuxTask("NUMA data", "cat /sys/devices/system/node/node*/numastat"),
@@ -815,6 +855,11 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                    log_file="stats.log",
                    timeout=60)
          for kind in ["connections"]],
+
+        [AllOsTask("fts mossScope (%s)" % path,
+                   ["mossScope", "stats", "diag", path],
+                   log_file="fts_mossScope_stats.log")
+         for path in glob.glob(os.path.join(viewdir, "@fts", "*.pindex", "store"))],
 
         [AllOsTask("ddocs for %s (%s)" % (bucket, path),
                    ["couch_dbdump", path],
@@ -1199,7 +1244,7 @@ def main():
         log("Python version: %s" % sys.version)
 
     runner.literal("cbcollect_info log", log_stream.getvalue(),
-                   log_file="cbcollect_info.log")
+                   log_file="cbcollect_info.log", no_header=True)
 
     runner.zip(zip_filename, zip_node)
 

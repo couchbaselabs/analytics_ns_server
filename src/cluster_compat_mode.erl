@@ -37,6 +37,7 @@
          is_cluster_46/0,
          is_version_46/1,
          is_cluster_spock/0,
+         is_cluster_spock/1,
          is_version_spock/1,
          is_enterprise/0,
          is_goxdcr_enabled/0,
@@ -44,7 +45,9 @@
          is_ldap_enabled/0,
          min_supported_compat_version/0,
          effective_cluster_compat_version/0,
-         effective_cluster_compat_version_for/1]).
+         effective_cluster_compat_version_for/1,
+         have_non_dcp_buckets/0,
+         have_non_dcp_buckets/1]).
 
 %% NOTE: this is rpc:call-ed by mb_master
 -export([supported_compat_version/0, mb_master_advertised_version/0]).
@@ -114,7 +117,10 @@ is_version_spock(ClusterVersion) ->
     is_enabled_at(ClusterVersion, ?SPOCK_VERSION_NUM).
 
 is_cluster_spock() ->
-    is_enabled(?SPOCK_VERSION_NUM).
+    is_cluster_spock(ns_config:latest()).
+
+is_cluster_spock(Config) ->
+    is_enabled(Config, ?SPOCK_VERSION_NUM).
 
 is_index_aware_rebalance_on() ->
     not ns_config:read_key_fast(index_aware_rebalance_disabled, false).
@@ -290,3 +296,18 @@ effective_cluster_compat_version_for([VersionMaj, VersionMin] = _CompatVersion) 
 
 effective_cluster_compat_version() ->
     effective_cluster_compat_version_for(get_compat_version()).
+
+have_non_dcp_buckets() ->
+    have_non_dcp_buckets(ns_config:latest()).
+
+have_non_dcp_buckets(Config) ->
+    Buckets = ns_bucket:get_buckets(Config),
+    BadBuckets = [B || {B, Conf} <- Buckets,
+                       ns_bucket:bucket_type(Conf) =:= membase andalso
+                           ns_bucket:replication_type(Conf) =/= dcp],
+    case BadBuckets of
+        [] ->
+            false;
+        _ ->
+            {true, BadBuckets}
+    end.

@@ -3,15 +3,16 @@ package main
 import (
 	"bytes"
 	"flag"
-	"github.com/tdewolff/minify"
-	"github.com/tdewolff/minify/js"
-	"golang.org/x/net/html"
-	"golang.org/x/net/html/atom"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/tdewolff/minify"
+	"github.com/tdewolff/minify/js"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 func getHTMLNodeAttr(n *html.Node, tagName string, attrKey string) string {
@@ -34,8 +35,8 @@ func isWhitespaceText(n *html.Node) bool {
 	return n.Type == html.TextNode && strings.TrimSpace(n.Data) == ""
 }
 
-func makeAppMinJsNode() *html.Node {
-	attrs := []html.Attribute{{Key: "src", Val: "app.min.js"}}
+func makeAppMinJsNode(minJSName string) *html.Node {
+	attrs := []html.Attribute{{Key: "src", Val: minJSName}}
 	return &html.Node{Type: html.ElementNode, Data: "script", DataAtom: atom.Data, Attr: attrs}
 }
 
@@ -71,7 +72,7 @@ func (r1 *result) merge(r2 result) {
 }
 
 // Minifies node and returns a minification Result.
-func doMinify(node *html.Node, ctx *context) result {
+func doMinify(node *html.Node, ctx *context, minJSName string) result {
 	prevWasWhitespace := false
 	var next *html.Node
 	rv := result{}
@@ -91,7 +92,7 @@ func doMinify(node *html.Node, ctx *context) result {
 		case strings.HasSuffix(script, ".js"):
 			if !ctx.FoundFirstAppScript {
 				ctx.FoundFirstAppScript = true
-				node.InsertBefore(makeAppMinJsNode(), child)
+				node.InsertBefore(makeAppMinJsNode(minJSName), child)
 				node.InsertBefore(makeNewLine(), child)
 			}
 			rv.AppScripts = append(rv.AppScripts, script)
@@ -106,7 +107,7 @@ func doMinify(node *html.Node, ctx *context) result {
 			if isPluggableUIInjectionComment(child) {
 				rv.PluggableInjectionCount++
 			} else {
-				childResult := doMinify(child, ctx)
+				childResult := doMinify(child, ctx, minJSName)
 				rv.merge(childResult)
 			}
 			prevWasWhitespace = false
@@ -127,8 +128,8 @@ func closeFile(file *os.File, sync bool) {
 	}
 }
 
-func createAppMinJsFile(appScripts []string, dir string) {
-	appMinJsWrtr, err := os.Create(filepath.Join(dir, "app.min.js"))
+func createAppMinJsFile(appScripts []string, dir string, minJSName string) {
+	appMinJsWrtr, err := os.Create(filepath.Join(dir, minJSName))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,8 +161,8 @@ func createAppMinJsFile(appScripts []string, dir string) {
 	}
 }
 
-func createIndexMinHTMLFile(document *html.Node, dir string) {
-	wrtr, err := os.Create(filepath.Join(dir, "index.min.html"))
+func createIndexMinHTMLFile(document *html.Node, dir string, minHTMLName string) {
+	wrtr, err := os.Create(filepath.Join(dir, minHTMLName))
 	if err != nil {
 		log.Fatalf("Error: could not open file for write: %v", err)
 	}
@@ -169,16 +170,25 @@ func createIndexMinHTMLFile(document *html.Node, dir string) {
 	html.Render(wrtr, document)
 }
 
-func main() {
-	indexHTML := flag.String("index-html", "", "path to index.html file (required)")
-	flag.Parse()
-	log.SetFlags(0)
-
-	if *indexHTML == "" {
-		log.Printf("Error: path to index.html file must be specified\n")
+func validateFlags(falgToCheck string, error string) {
+	if falgToCheck == "" {
+		log.Printf(error)
 		flag.Usage()
 		os.Exit(1)
 	}
+}
+
+func main() {
+	indexHTML := flag.String("index-html", "", "path to index.html file (required)")
+	minJSName := flag.String("min-js-name", "", "output html file name (required)")
+	minHTMLName := flag.String("min-html-name", "", "output js file name (required)")
+
+	flag.Parse()
+	log.SetFlags(0)
+
+	validateFlags(*indexHTML, "Error: path to index.html file must be specified\n")
+	validateFlags(*minHTMLName, "Error: output html file name must be specified\n")
+	validateFlags(*minJSName, "Error: output js file name must be specified\n")
 
 	rdr, err := os.Open(*indexHTML)
 	if err != nil {
@@ -191,12 +201,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error during parse of '%v': %v", *indexHTML, err)
 	}
-	rv := doMinify(doc, &context{BaseDir: dir})
+	rv := doMinify(doc, &context{BaseDir: dir}, *minJSName)
 	if rv.PluggableInjectionCount != 1 {
 		log.Fatalf("Error: number of pluggable injection comments found was %v, should be 1",
 			rv.PluggableInjectionCount)
 	}
 	dirRelativeToBase := filepath.Join(dir, rv.IndexHTMLBase)
-	createAppMinJsFile(rv.AppScripts, dirRelativeToBase)
-	createIndexMinHTMLFile(doc, dir)
+	createAppMinJsFile(rv.AppScripts, dirRelativeToBase, *minJSName)
+	createIndexMinHTMLFile(doc, dir, *minHTMLName)
 }

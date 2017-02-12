@@ -78,8 +78,10 @@ child_specs() ->
      {ns_crash_log_consumer, {ns_log, start_link_crash_consumer, []},
       {permanent, 4}, 1000, worker, []},
 
-     %% Track bucket configs and ensure isasl is sync'd up
-     {ns_config_isasl_sync, {ns_config_isasl_sync, start_link, []},
+     {memcached_passwords, {memcached_passwords, start_link, []},
+      permanent, 1000, worker, []},
+
+     {memcached_permissions, {memcached_permissions, start_link, []},
       permanent, 1000, worker, []},
 
      {ns_log_events, {gen_event, start_link, [{local, ns_log_events}]},
@@ -200,6 +202,9 @@ child_specs() ->
      {xdcr_dcp_sockets_pool, {xdcr_dcp_sockets_pool, start_link, []},
       permanent, 1000, worker, []},
 
+     {testconditions_store, {simple_store, start_link, [testconditions]},
+      permanent, 1000, worker, []},
+
      {ns_bucket_worker_sup, {ns_bucket_worker_sup, start_link, []},
       permanent, infinity, supervisor, [ns_bucket_worker_sup]},
 
@@ -270,4 +275,7 @@ child_specs() ->
       permanent, brutal_kill, worker, dynamic},
 
      {master_activity_events_keeper, {master_activity_events_keeper, start_link, []},
-      permanent, brutal_kill, worker, dynamic}].
+      permanent, brutal_kill, worker, dynamic},
+
+     {health_monitor_sup, {health_monitor_sup, start_link, []},
+      permanent, infinity, supervisor, [health_monitor_sup]}].

@@ -45,17 +45,22 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([get_definitions/0,
-         get_definitions/1,
+-export([get_definitions/1,
          preconfigured_roles/0,
+         preconfigured_roles_45/0,
          is_allowed/2,
          get_roles/1,
          get_compiled_roles/1,
+         compile_roles/2,
          get_all_assignable_roles/1,
          validate_roles/2]).
 
 -spec preconfigured_roles() -> [rbac_role_def(), ...].
 preconfigured_roles() ->
+    upgrade_roles_spock(preconfigured_roles_45()) ++ preconfigured_roles_spock().
+
+-spec preconfigured_roles_45() -> [rbac_role_def(), ...].
+preconfigured_roles_45() ->
     [{admin, [],
       [{name, <<"Admin">>},
        {desc, <<"Can manage ALL cluster features including security.">>}],
@@ -110,19 +115,107 @@ preconfigured_roles() ->
        {[admin], none},
        {[], [read]}]}].
 
--spec get_definitions() -> [rbac_role_def(), ...].
-get_definitions() ->
-    case cluster_compat_mode:is_cluster_45() of
-        true ->
-            get_definitions(ns_config:latest());
-        false ->
-            preconfigured_roles()
-    end.
+-spec preconfigured_roles_spock() -> [rbac_role_def(), ...].
+preconfigured_roles_spock() ->
+    [{data_reader, [bucket_name],
+      [{name, <<"Data Reader">>},
+       {desc, <<"Can read information from specified bucket">>}],
+      [{[{bucket, bucket_name}, stats], [read]},
+       {[{bucket, bucket_name}, data, docs], [read]},
+       {[{bucket, bucket_name}, data, meta], [read]},
+       {[{bucket, bucket_name}, data, xattr], [read]},
+       {[{bucket, bucket_name}, n1ql], [execute]},
+       {[pools], [read]}]},
+     {data_reader_writer, [bucket_name],
+      [{name, <<"Data Reader Writer">>},
+       {desc, <<"Can read and write information from/to specified bucket">>}],
+      [{[{bucket, bucket_name}, stats], [read]},
+       {[{bucket, bucket_name}, data, docs], [read, write]},
+       {[{bucket, bucket_name}, data, meta], [read, write]},
+       {[{bucket, bucket_name}, data, xattr], [read, write]},
+       {[{bucket, bucket_name}, n1ql], [execute]},
+       {[pools], [read]}]},
+     {data_dcp_reader, [bucket_name],
+      [{name, <<"Data DCP Reader">>},
+       {desc, <<"Can read DCP data streams and stats">>}],
+      [{[{bucket, bucket_name}, stats], [read]},
+       {[{bucket, bucket_name}, data, dcp], [read]},
+       {[pools], [read]}]},
+     {data_backup, [bucket_name],
+      [{name, <<"Data Backup">>},
+       {desc, <<"Can backup and restore bucket data">>}],
+      [{[{bucket, bucket_name}, stats], [read]},
+       {[{bucket, bucket_name}, data, meta], [read, write]},
+       {[pools], [read]}]},
+     {data_monitoring, [bucket_name],
+      [{name, <<"Data Monitoring">>},
+       {desc, <<"Can read full bucket stats">>}],
+      [{[{bucket, bucket_name}, stats], [read]},
+       {[pools], [read]}]},
+     {fts_admin, [bucket_name],
+      [{name, <<"FTS Admin">>},
+       {desc, <<"Can administer all FTS features">>}],
+      [{[{bucket, bucket_name}, fts], [read, write, manage]},
+       {[pools], [read]}]},
+     {fts_searcher, [bucket_name],
+      [{name, <<"FTS Searcher">>},
+       {desc, <<"Can query FTS indexes if they have bucket permissions">>}],
+      [{[{bucket, bucket_name}, fts], [read]},
+       {[pools], [read]}]},
+     {query_select, [bucket_name],
+      [{name, <<"Query Select">>},
+       {desc, <<"Can execute SELECT statement on bucket to retrieve data">>}],
+      [{[{bucket, bucket_name}, n1ql, select], [execute]},
+       {[pools], [read]}]},
+     {query_update, [bucket_name],
+      [{name, <<"Query Update">>},
+       {desc, <<"Can execute UPDATE statement on bucket to update data">>}],
+      [{[{bucket, bucket_name}, n1ql, update], [execute]},
+       {[pools], [read]}]},
+     {query_insert, [bucket_name],
+      [{name, <<"Query Insert">>},
+       {desc, <<"Can execute INSERT statement on bucket to add data">>}],
+      [{[{bucket, bucket_name}, n1ql, insert], [execute]},
+       {[pools], [read]}]},
+     {query_delete, [bucket_name],
+      [{name, <<"Query Delete">>},
+       {desc, <<"Can execute DELETE statement on bucket to delete data">>}],
+      [{[{bucket, bucket_name}, n1ql, delete], [execute]},
+       {[pools], [read]}]},
+     {manage_index, [bucket_name],
+      [{name, <<"Manage Index">>},
+       {desc, <<"Can manage indexes for the bucket">>}],
+      [{[{bucket, bucket_name}, n1ql, create_index], [execute]},
+       {[{bucket, bucket_name}, n1ql, alter_index], [execute]},
+       {[pools], [read]}]},
+     {system_catalog, [bucket_name],
+      [{name, <<"System Catalog">>},
+       {desc, <<"Can lookup system catalog information">>}],
+      [{[{bucket, bucket_name}, n1ql, list_indexes], [execute]},
+       {[pools], [read]}]}].
+
+upgrade_roles_spock(Definitions) ->
+    D1 = upgrade_role_add_permission(Definitions, views_admin,
+                                     {[{bucket, bucket_name}, n1ql], [execute]}),
+    upgrade_role_add_permission(D1, bucket_sasl,
+                                {[{bucket, bucket_name}, n1ql], [execute]}).
+
+upgrade_role_add_permission(Definitions, Role, Permission) ->
+    {value, {Role, Params, Info, Permissions}} =
+        lists:keysearch(Role, 1, Definitions),
+    lists:keyreplace(Role, 1, Definitions,
+                     {Role, Params, Info,
+                      [Permission | Permissions]}).
 
 -spec get_definitions(ns_config()) -> [rbac_role_def(), ...].
 get_definitions(Config) ->
     {value, RolesDefinitions} = ns_config:search(Config, roles_definitions),
-    RolesDefinitions.
+    case cluster_compat_mode:is_cluster_spock(Config) of
+        true ->
+            RolesDefinitions;
+        false ->
+            upgrade_roles_spock(RolesDefinitions)
+    end.
 
 -spec object_match(rbac_permission_object(), rbac_permission_pattern_object()) ->
                           boolean().
@@ -241,12 +334,16 @@ get_roles({_, builtin} = Identity) ->
 get_roles({_, saslauthd} = Identity) ->
     get_user_roles(Identity).
 
--spec get_compiled_roles([rbac_role()] | rbac_identity()) -> [rbac_compiled_role()].
-get_compiled_roles(Roles) when is_list(Roles) ->
-    Definitions = get_definitions(),
-    compile_roles(Roles, Definitions);
+-spec get_compiled_roles(rbac_identity()) -> [rbac_compiled_role()].
 get_compiled_roles(Identity) ->
-    get_compiled_roles(get_roles(Identity)).
+    Definitions =
+        case cluster_compat_mode:is_cluster_45() of
+            true ->
+                get_definitions(ns_config:latest());
+            false ->
+                preconfigured_roles()
+        end,
+    compile_roles(get_roles(Identity), Definitions).
 
 -spec get_possible_param_values(ns_config(), atom()) -> [rbac_role_param()].
 get_possible_param_values(Config, bucket_name) ->

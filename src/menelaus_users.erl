@@ -23,57 +23,106 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -export([get_users/1,
+         get_identity/1,
          store_user/4,
          delete_user/1,
+         change_password/2,
          authenticate/2,
          get_auth_infos/1,
+         get_roles/1,
          get_roles/2,
          get_user_name/2,
-         upgrade_to_4_5/1]).
+         upgrade_to_4_5/1,
+         get_memcached_auth_infos/1,
+         build_memcached_auth_info/1]).
 
 -spec get_users(ns_config()) -> [{rbac_identity(), []}].
 get_users(Config) ->
     ns_config:search(Config, user_roles, []).
 
-build_auth(_Identity, undefined, _Users) ->
-    [];
-build_auth(Identity, Password, Users) ->
-    case proplists:get_value(Identity, Users) of
-        undefined ->
-            [{authentication, build_auth(Password)}];
-        Props ->
-            Auth = get_auth_info(Props),
-            {Salt, Mac} = get_salt_and_mac(Auth),
-            case ns_config_auth:hash_password(Salt, Password) of
-                Mac ->
-                    [{authentication, Auth}];
+-spec get_identity({rbac_identity(), []}) -> rbac_identity().
+get_identity({Identity, _}) ->
+    Identity.
+
+build_auth_builtin(undefined, undefined, _MemcachedAuth) ->
+    password_required;
+build_auth_builtin(undefined, Password, MemcachedAuth) ->
+    [{ns_server, ns_config_auth:hash_password(Password)},
+     {memcached, MemcachedAuth}];
+build_auth_builtin(User, undefined, _MemcachedAuth) ->
+    get_auth_info(User);
+build_auth_builtin(User, Password, MemcachedAuth) ->
+    Auth = get_auth_info(User),
+    {Salt, Mac} = get_salt_and_mac(Auth),
+    case ns_config_auth:hash_password(Salt, Password) of
+        Mac ->
+            case get_memcached_auth(Auth) of
+                undefined ->
+                    [{memcached, MemcachedAuth} | Auth];
                 _ ->
-                    [{authentication, build_auth(Password)}]
-            end
+                    Auth
+            end;
+        _ ->
+            [{ns_server, ns_config_auth:hash_password(Password)},
+             {memcached, MemcachedAuth}]
     end.
 
-build_auth(Password) ->
-    [{ns_server, ns_config_auth:hash_password(Password)}].
+build_auth(saslauthd, _User, undefined, undefined) ->
+    [];
+build_auth(builtin, User, Password, MemcachedAuth) ->
+    case build_auth_builtin(User, Password, MemcachedAuth) of
+        password_required ->
+            password_required;
+        Auth ->
+            [{authentication, Auth}]
+    end.
+
+build_memcached_auth(_User, undefined) ->
+    undefined;
+build_memcached_auth(User, Password) ->
+    [MemcachedAuth] = build_memcached_auth_info([{User, Password}]),
+    MemcachedAuth.
 
 -spec store_user(rbac_identity(), rbac_user_name(), rbac_password(), [rbac_role()]) -> run_txn_return().
-store_user(Identity, Name, Password, Roles) ->
+store_user({UserName, Type} = Identity, Name, Password, Roles) ->
     Props = case Name of
                 undefined ->
                     [];
                 _ ->
                     [{name, Name}]
             end,
+    MemcachedAuth = build_memcached_auth(UserName, Password),
     ns_config:run_txn(
       fun (Config, SetFn) ->
               Users = get_users(Config),
-              NewProps = [{roles, Roles} | Props] ++ build_auth(Identity, Password, Users),
+              case build_auth(Type, proplists:get_value(Identity, Users), Password, MemcachedAuth) of
+                  password_required ->
+                      {abort, password_required};
+                  Auth ->
+                      NewProps = [{roles, Roles} | Props] ++ Auth,
+                      case menelaus_roles:validate_roles(Roles, Config) of
+                          ok ->
+                              NewUsers = lists:keystore(Identity, 1, Users, {Identity, NewProps}),
+                              {commit, SetFn(user_roles, NewUsers, Config)};
+                          Error ->
+                              {abort, Error}
+                      end
+              end
+      end).
 
-              case menelaus_roles:validate_roles(Roles, Config) of
-                  ok ->
-                      NewUsers = lists:keystore(Identity, 1, Users, {Identity, NewProps}),
-                      {commit, SetFn(user_roles, NewUsers, Config)};
-                  Error ->
-                      {abort, Error}
+change_password({UserName, builtin} = Identity, Password) when is_list(Password) ->
+    MemcachedAuth = build_memcached_auth(UserName, Password),
+    ns_config:run_txn(
+      fun (Config, SetFn) ->
+              Users = get_users(Config),
+              case proplists:get_value(Identity, Users) of
+                  undefined ->
+                      {abort, user_not_found};
+                  User ->
+                      Auth = build_auth_builtin(User, Password, MemcachedAuth),
+                      NewUser = lists:keyreplace(authentication, 1, User, {authentication, Auth}),
+                      NewUsers = lists:keystore(Identity, 1, Users, {Identity, NewUser}),
+                      {commit, SetFn(user_roles, NewUsers, Config)}
               end
       end).
 
@@ -100,6 +149,9 @@ get_auth_info(Props) ->
 get_salt_and_mac(Auth) ->
     proplists:get_value(ns_server, Auth).
 
+get_memcached_auth(Auth) ->
+    proplists:get_value(memcached, Auth).
+
 -spec authenticate(rbac_user_id(), rbac_password()) -> boolean().
 authenticate(Username, Password) ->
     Users = get_users(ns_config:latest()),
@@ -117,15 +169,45 @@ get_auth_infos(Config) ->
     [{{Username, builtin}, get_salt_and_mac(get_auth_info(Props))} ||
         {{Username, builtin}, Props} <- Users].
 
+-spec get_memcached_auth_infos([{rbac_identity(), []}]) -> list().
+get_memcached_auth_infos(Users) ->
+    [get_memcached_auth(get_auth_info(Props)) ||
+        {{_Username, builtin}, Props} <- Users].
+
+-spec get_roles({rbac_identity(), []}) -> [rbac_role()].
+get_roles({_Identity, Props}) ->
+    proplists:get_value(roles, Props, []).
+
 -spec get_roles(ns_config(), rbac_identity()) -> [rbac_role()].
 get_roles(Config, Identity) ->
     Props = ns_config:search_prop(Config, user_roles, Identity, []),
-    proplists:get_value(roles, Props, []).
+    get_roles({Identity, Props}).
 
 -spec get_user_name(ns_config(), rbac_identity()) -> rbac_user_name().
 get_user_name(Config, Identity) ->
     Props = ns_config:search_prop(Config, user_roles, Identity, []),
     proplists:get_value(name, Props).
+
+collect_result(Port, Acc) ->
+    receive
+        {Port, {exit_status, Status}} ->
+            {Status, lists:flatten(lists:reverse(Acc))};
+        {Port, {data, Msg}} ->
+            collect_result(Port, [Msg | Acc])
+    end.
+
+build_memcached_auth_info(UserPasswords) ->
+    Iterations = ns_config:read_key_fast(memcached_password_hash_iterations, 4000),
+    Port = ns_ports_setup:run_cbsasladm(Iterations),
+    lists:foreach(
+      fun ({User, Password}) ->
+              PasswordStr = User ++ " " ++ Password ++ "\n",
+              Port ! {self(), {command, list_to_binary(PasswordStr)}}
+      end, UserPasswords),
+    Port ! {self(), {command, <<"\n">>}},
+    {0, Json} = collect_result(Port, []),
+    {struct, [{<<"users">>, Infos}]} = mochijson2:decode(Json),
+    Infos.
 
 collect_users(asterisk, _Role, Dict) ->
     Dict;
