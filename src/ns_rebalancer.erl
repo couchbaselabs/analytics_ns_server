@@ -40,7 +40,8 @@
          verify_replication/3,
          start_link_graceful_failover/1,
          generate_vbucket_map_options/2,
-         run_failover/1]).
+         run_failover/1,
+         rebalance_topology_aware_services/4]).
 
 -export([wait_local_buckets_shutdown_complete/0]). % used via rpc:multicall
 
@@ -1318,8 +1319,7 @@ run_graceful_failover(Node) ->
                                              I / NumBuckets, NumBuckets),
               I+1
       end, 0, InterestingBuckets),
-    orchestrate_failover(Node),
-    erlang:exit(graceful_failover_done).
+    orchestrate_failover(Node).
 
 do_run_graceful_failover_moves(Node, BucketName, BucketConfig, I, N) ->
     run_janitor_pre_rebalance(BucketName),

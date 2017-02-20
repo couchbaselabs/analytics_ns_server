@@ -148,16 +148,23 @@ add_couch_api_base_loop([Node | RestNodes],
     end.
 
 add_couch_api_base(BucketName, BucketUUID, KV, Node, LocalAddr) ->
-    KV1 = case capi_utils:capi_bucket_url_bin(Node, BucketName, BucketUUID, LocalAddr) of
-              undefined -> KV;
-              CapiBucketUrl ->
-                  [{couchApiBase, CapiBucketUrl} | KV]
-          end,
-    case capi_utils:capi_bucket_url_bin({ssl, Node}, BucketName, BucketUUID, LocalAddr) of
-        undefined -> KV1;
-        CapiSSLBucketUrl ->
-            [{couchApiBaseHTTPS, CapiSSLBucketUrl} | KV1]
-    end.
+    NodesKeysList = [{Node, couchApiBase}, {{ssl, Node}, couchApiBaseHTTPS}],
+
+    lists:foldl(fun({N, Key}, KVAcc) ->
+                        case capi_utils:capi_bucket_url_bin(N, BucketName,
+                                                            BucketUUID, LocalAddr) of
+                            undefined ->
+                                KVAcc;
+                            Url ->
+                                {ok, BCfg} = ns_bucket:get_bucket(BucketName),
+                                case ns_bucket:storage_mode(BCfg) of
+                                    couchstore ->
+                                        [{Key, Url} | KVAcc];
+                                    _ ->
+                                        KVAcc
+                                end
+                        end
+                end, KV, NodesKeysList).
 
 %% Used while building the bucket info. This transforms the internal
 %% representation of bucket types to externally known bucket types.
@@ -184,7 +191,6 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
     StatsUri = bin_concat_path(["pools", "default", "buckets", Id, "stats"]),
     StatsDirectoryUri = iolist_to_binary([StatsUri, <<"Directory">>]),
     NodeStatsListURI = bin_concat_path(["pools", "default", "buckets", Id, "nodes"]),
-    DDocsURI = bin_concat_path(["pools", "default", "buckets", Id, "ddocs"]),
     BucketCaps = build_bucket_capabilities(BucketConfig),
 
     MaybeBucketUUID = proplists:get_value(uuid, BucketConfig),
@@ -286,6 +292,17 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
                        | Suffix2]
               end,
 
+    Suffix4 = case ns_bucket:storage_mode(BucketConfig) of
+                  couchstore ->
+                      DDocsURI = bin_concat_path(["pools", "default", "buckets",
+                                                  Id, "ddocs"]),
+                      [{ddocs, {struct, [{uri, DDocsURI}]}},
+                       {replicaIndex, proplists:get_value(replica_index, BucketConfig, true)}
+                       | Suffix3];
+                  _ ->
+                      Suffix3
+              end,
+
     FlushEnabled = proplists:get_value(flush_enabled, BucketConfig, false),
     MaybeFlushController =
         case FlushEnabled of
@@ -304,7 +321,6 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
                                  _ -> <<"">>
                              end},
               {proxyPort, proplists:get_value(moxi_port, BucketConfig, 0)},
-              {replicaIndex, proplists:get_value(replica_index, BucketConfig, true)},
               {uri, BuildUUIDURI(["pools", "default", "buckets", Id])},
               {streamingUri, BuildUUIDURI(["pools", "default", "bucketsStreaming", Id])},
               {localRandomKeyUri, bin_concat_path(["pools", "default",
@@ -315,7 +331,7 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
                     [{compactAll, bin_concat_path(["pools", "default",
                                                    "buckets", Id, "controller", "compactBucket"])},
                      {compactDB, bin_concat_path(["pools", "default",
-                                                  "buckets", "default", "controller", "compactDatabases"])},
+                                                  "buckets", Id, "controller", "compactDatabases"])},
                      {purgeDeletes, bin_concat_path(["pools", "default",
                                                      "buckets", Id, "controller", "unsafePurgeBucket"])},
                      {startRecovery, bin_concat_path(["pools", "default",
@@ -324,9 +340,8 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
               {stats, {struct, [{uri, StatsUri},
                                 {directoryURI, StatsDirectoryUri},
                                 {nodeStatsListURI, NodeStatsListURI}]}},
-              {ddocs, {struct, [{uri, DDocsURI}]}},
               {nodeLocator, ns_bucket:node_locator(BucketConfig)}
-              | Suffix3]}.
+              | Suffix4]}.
 
 build_bucket_capabilities(BucketConfig) ->
     Caps =
@@ -338,7 +353,12 @@ build_bucket_capabilities(BucketConfig) ->
                                false ->
                                    []
                            end,
-                [cbhello, touch, couchapi, cccp, xdcrCheckpointing, nodesExt | MaybeDCP];
+                case ns_bucket:storage_mode(BucketConfig) of
+                    couchstore ->
+                        [cbhello, touch, couchapi, cccp, xdcrCheckpointing, nodesExt | MaybeDCP];
+                    ephemeral ->
+                        [cbhello, touch, cccp, xdcrCheckpointing, nodesExt | MaybeDCP]
+                end;
             memcached ->
                 [cbhello, nodesExt]
         end,
@@ -1003,7 +1023,7 @@ validate_replicas_number(Params, IsNew) ->
 %% used/checked at multiple places and would need changes in all those places.
 %% Hence the above described approach.
 get_storage_mode(Params, _BucketConfig, true = _IsNew) ->
-    case proplists:get_value("bucketType", Params) of
+    case proplists:get_value("bucketType", Params, "membase") of
         "membase" ->
             {ok, storage_mode, couchstore};
         "couchbase" ->
@@ -1211,9 +1231,19 @@ parse_validate_replicas_number(NumReplicas) ->
     end.
 
 parse_validate_replica_index(Params, ReplicasNum, true = _IsNew) ->
-    parse_validate_replica_index(
-      proplists:get_value("replicaIndex", Params,
-                          replicas_num_default(ReplicasNum)));
+    case proplists:get_value("bucketType", Params) =:= "ephemeral" of
+        true ->
+            case proplists:is_defined("replicaIndex", Params) of
+                true ->
+                    {error, replicaIndex, <<"replicaIndex not supported for ephemeral buckets">>};
+                false ->
+                    ignore
+            end;
+        false ->
+            parse_validate_replica_index(
+              proplists:get_value("replicaIndex", Params,
+                                  replicas_num_default(ReplicasNum)))
+    end;
 parse_validate_replica_index(_Params, _ReplicasNum, false = _IsNew) ->
     ignore.
 

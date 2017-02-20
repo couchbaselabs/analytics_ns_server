@@ -2,12 +2,12 @@
   "use strict";
 
   angular
-    .module("mnExternalRoles")
-    .controller("mnExternalRolesAddDialogController", mnExternalRolesAddDialogController);
+    .module("mnUserRoles")
+    .controller("mnUserRolesAddDialogController", mnUserRolesAddDialogController);
 
-  function mnExternalRolesAddDialogController($scope, mnExternalRolesService, $uibModalInstance, mnPromiseHelper, user) {
+  function mnUserRolesAddDialogController($scope, mnUserRolesService, $uibModalInstance, mnPromiseHelper, user) {
     var vm = this;
-    vm.user = _.clone(user) || {};
+    vm.user = _.clone(user) || {type: "saslauthd"};
     vm.userID = vm.user.id || 'New';
     vm.roles = [];
     vm.save = save;
@@ -20,24 +20,24 @@
     }
 
     function activate() {
-      var promise = mnPromiseHelper(vm, mnExternalRolesService.getRoles())
+      var promise = mnPromiseHelper(vm, mnUserRolesService.getRoles())
         .showSpinner()
         .applyToScope("roles")
         .getPromise();
 
       if (user) {
         promise.then(function () {
-          return mnExternalRolesService.getRolesByRole(user.roles);
+          return mnUserRolesService.getRolesByRole(user.roles);
         }).then(function (userRolesByRole) {
           vm.roles.selected = _.filter(vm.roles, function (role) {
-            return mnExternalRolesService.getRoleFromRoles(userRolesByRole, role);
+            return mnUserRolesService.getRoleFromRoles(userRolesByRole, role);
           });
         });
       }
     }
 
     function save() {
-      mnPromiseHelper(vm, mnExternalRolesService.addUser(vm.user, vm.roles.selected, user), $uibModalInstance)
+      mnPromiseHelper(vm, mnUserRolesService.addUser(vm.user, vm.roles.selected, user), $uibModalInstance)
         .showGlobalSpinner()
         .catchErrors()
         .broadcast("reloadRolesPoller")

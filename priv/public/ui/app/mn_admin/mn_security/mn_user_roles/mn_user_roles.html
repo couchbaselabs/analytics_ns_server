@@ -1,0 +1,98 @@
+<div mn-spinner="!userRolesCtl.state || userRolesCtl.viewLoading" min-height="300px">
+  <div class="interim row">
+    <span>
+      <span
+         class="icon"
+         ng-class="{
+                   'fa-check': userRolesCtl.saslauthdAuth.enabled,
+                   'green': userRolesCtl.saslauthdAuth.enabled,
+                   'fa-ban': !userRolesCtl.saslauthdAuth.enabled,
+                   'red': !userRolesCtl.saslauthdAuth.enabled
+                   }"></span>
+      <span class="text-small">authentication</span>
+      <span ng-show="userRolesCtl.saslauthdAuth" class="text-small">
+        <span ng-show="!userRolesCtl.saslauthdAuth.enabled">Not</span> enabled
+      </span>&nbsp;
+      <a
+         href=""
+         class="text-small "
+         ng-show="!userRolesCtl.saslauthdAuthLoading"
+         ng-click="userRolesCtl.toggleSaslauthdAuth()">
+        <span ng-show="!userRolesCtl.saslauthdAuth.enabled && rbac.cluster.admin.security.write">
+          enable
+        </span>
+        <span ng-show="userRolesCtl.saslauthdAuth.enabled && rbac.cluster.admin.security.write">
+          disable
+        </span>
+      </a>
+    </span>
+    <button
+       ng-show="rbac.cluster.admin.security.write"
+       ng-click="userRolesCtl.addUser()">+ Add User</button>
+  </div>
+
+  <div>
+    <table
+       class="table-stroked"
+       mn-sortable-table>
+      <tr>
+        <th mn-sortable-title="id">Username</th>
+        <th
+           mn-sortable-title="name"
+           sort-by-default="true"
+           class="text-center">Full Name</th>
+        <th mn-sortable-title="roles" class="text-center">Roles</th>
+        <th mn-sortable-title="type">Auth</th>
+      </tr>
+      <tbody
+         ng-if="userRolesCtl.state.users.length"
+         ng-repeat="user in userRolesCtl.state.users | orderBy:mnSortableTable.sortableTableProperties.orderBy:mnSortableTable.sortableTableProperties.invert track by user.id">
+        <tr
+           class="has-hover"
+           ng-click="userRolesCtl.toggleDetails(user.id)"
+           ng-class="{'no-stroke': userRolesCtl.isDetailsOpened(user.id)}">
+          <td class="ellipsis">{{user.id}}</td>
+          <td class="ellipsis text-center">{{user.name}}</td>
+          <td class="text-center">
+            <a
+               href=""
+               class="margin-right-half"
+               ng-repeat="role in user.roles"
+               uib-tooltip="{{userRolesCtl.getRoleFromRoles(userRolesCtl.rolesByRole, role).desc}}">
+              {{userRolesCtl.getRoleFromRoles(userRolesCtl.rolesByRole, role).name}} <span ng-show="role.bucket_name">[{{role.bucket_name}}]</span>
+            </a>
+          </td>
+          <td>
+            {{user.type === "builtin" ? "Internal" : "LDAP"}}
+          </td>
+        </tr>
+        <tr>
+          <td class="text-right" colspan="4" ng-if="userRolesCtl.isDetailsOpened(user.id)">
+            <button
+               class="outline"
+               ng-show="rbac.cluster.admin.security.write"
+               ng-click="userRolesCtl.deleteUser(user)">Delete</button>
+            <button
+               ng-show="rbac.cluster.admin.security.write"
+               ng-click="userRolesCtl.editUser(user)">Edit</button>
+          </td>
+        </tr>
+      </tbody>
+      <tbody ng-if="!userRolesCtl.state.users.length">
+        <tr>
+          <td colspan="4">Users list is empty</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="text-smaller">
+      <strong class="margin-right-half">Roles:</strong>
+      <a
+         href=""
+         class="margin-right-half"
+         uib-tooltip="{{role.desc}}"
+         ng-repeat="role in userRolesCtl.roles | filter:userRolesCtl.rolesFilter">
+        {{role.name}}
+      </a>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,90 @@
+<div class="dialog-med">
+  <h2 class="ellipsis panel-header">
+    Manage User &gt; {{userRolesAddDialogCtl.userID}}
+  </h2>
+  <form
+     ng-submit="userRolesAddDialogCtl.save()"
+     mn-spinner="userRolesAddDialogCtl.viewLoading">
+    <div class="panel-content forms">
+      <div
+         class="error error-form"
+         ng-show="userRolesAddDialogCtl.errors"
+         ng-repeat="error in userRolesAddDialogCtl.errors">
+        {{error}}
+      </div>
+      <div class="formrow checkbox-list">
+        <h4>Authentication Source:</h4>
+        <input
+           type="radio"
+           name="type"
+           value="saslauthd"
+           id="user-type-ldap"
+           ng-model="userRolesAddDialogCtl.user.type">
+        <label for="user-type-ldap">LDAP</label>
+        <input
+           type="radio"
+           name="type"
+           value="builtin"
+           id="user-type-builtin"
+           ng-model="userRolesAddDialogCtl.user.type">
+        <label for="user-type-builtin">Couchbase</label>
+      </div>
+      <div class="formrow">
+        <label for="name_inp">Username:</label>
+        <input
+           type="text"
+           autocorrect="off"
+           spellcheck="false"
+           autocapitalize="off"
+           id="name_inp"
+           ng-model="userRolesAddDialogCtl.user.id">
+      </div>
+      <div class="formrow">
+        <label for="name_full_inp">Full Name <small>(optional)</small></label>
+        <input
+           type="text"
+           autocorrect="off"
+           spellcheck="false"
+           autocapitalize="off"
+           id="name_full_inp"
+           ng-model="userRolesAddDialogCtl.user.name">
+      </div>
+      <div class="formrow" ng-if="userRolesAddDialogCtl.user.type !== 'saslauthd'">
+        <label for="password_inp">Password:</label>
+        <input
+           type="password"
+           autocorrect="off"
+           spellcheck="false"
+           autocapitalize="off"
+           id="password_inp"
+           ng-model="userRolesAddDialogCtl.user.password">
+      </div>
+      <div class="formrow">
+        <label for="user_inp">Role(s)</label>
+        <ui-select
+           style="border: 1px solid #d1d1d1;"
+           on-select="userRolesAddDialogCtl.onSelect($select)"
+           multiple
+           ng-if="userRolesAddDialogCtl.roles"
+           ng-model="userRolesAddDialogCtl.roles.selected">
+          <ui-select-match
+             placeholder="choose single or multiple roles">
+            {{$item.name}}<span ng-show="$item.bucket_name">[{{$item.bucket_name}}]</span>
+          </ui-select-match>
+          <ui-select-choices
+             repeat="role in userRolesAddDialogCtl.roles | filter: $select.search">
+            <span
+               class="ellipsis"
+               ng-bind-html="(role.name + (role.bucket_name ? '[' + role.bucket_name + ']' : '')) | highlight: $select.search"></span>
+          </ui-select-choices>
+        </ui-select>
+      </div>
+    </div>
+    <div class="panel-footer">
+      <a
+         href=""
+         ng-click="$dismiss()">Cancel</a>
+      <button type="submit">Save</button>
+    </div>
+  </form>
+</div>

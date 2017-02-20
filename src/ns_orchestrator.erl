@@ -35,7 +35,8 @@
                             keep_nodes,
                             eject_nodes,
                             failed_nodes,
-                            stop_timer}).
+                            stop_timer,
+                            type}).
 -record(recovery_state, {uuid :: binary(),
                          bucket :: bucket_name(),
                          recoverer_state :: any()}).
@@ -82,7 +83,7 @@
 -define(CREATE_BUCKET_TIMEOUT, ns_config:get_timeout(create_bucket, 5000)).
 -define(RECOVERY_QUERY_STATES_TIMEOUT,
         ns_config:get_timeout(recovery_query_states, 5000)).
--define(JANITOR_INTERVAL, ns_config:read_key_fast(janitor_interval, 10000)).
+-define(JANITOR_INTERVAL, ns_config:read_key_fast(janitor_interval, 5000)).
 -define(STOP_REBALANCE_TIMEOUT, ns_config:get_timeout(stop_rebalance_timeout, 60000)).
 
 %% gen_fsm callbacks
@@ -517,53 +518,8 @@ handle_info({'EXIT', Pid, Reason}, janitor_running,
     consider_switching_compat_mode(),
     {next_state, idle, #idle_state{janitor_requests = RestRequests}};
 handle_info({'EXIT', Pid, Reason}, rebalancing,
-            #rebalancing_state{rebalancer=Pid,
-                               keep_nodes=KeepNodes,
-                               eject_nodes=EjectNodes,
-                               failed_nodes=FailedNodes,
-                               stop_timer=MaybeTref}) ->
-    Status = case Reason of
-                 graceful_failover_done ->
-                     none;
-                 normal ->
-                     ?user_log(?REBALANCE_SUCCESSFUL,
-                               "Rebalance completed successfully.~n"),
-                     ns_cluster:counter_inc(rebalance_success),
-                     auto_failover:reset_count_async(),
-                     none;
-                 stopped ->
-                     ?user_log(?REBALANCE_STOPPED,
-                               "Rebalance stopped by user.~n"),
-                     ns_cluster:counter_inc(rebalance_stop),
-                     case MaybeTref of
-                         undefined ->
-                             ok;
-                         _ ->
-                             gen_fsm:cancel_timer(MaybeTref)
-                     end,
-                     none;
-                 _ ->
-                     ?user_log(?REBALANCE_FAILED,
-                               "Rebalance exited with reason ~p~n", [Reason]),
-                     ns_cluster:counter_inc(rebalance_fail),
-                     {none, <<"Rebalance failed. See logs for detailed reason. "
-                              "You can try rebalance again.">>}
-             end,
-
-    ns_config:set([{rebalance_status, Status},
-                   {rebalance_status_uuid, couch_uuids:random()},
-                   {rebalancer_pid, undefined}]),
-    rpc:eval_everywhere(diag_handler, log_all_dcp_stats, []),
-    case (lists:member(node(), EjectNodes) andalso Reason =:= normal) orelse
-        lists:member(node(), FailedNodes) of
-        true ->
-            ok = ns_config_rep:ensure_config_seen_by_nodes(KeepNodes),
-            ns_rebalancer:eject_nodes([node()]);
-        false ->
-            ok
-    end,
-
-    {next_state, idle, #idle_state{}};
+            #rebalancing_state{rebalancer=Pid} = State) ->
+    handle_rebalance_completion(Reason, State);
 
 handle_info(Msg, StateName, StateData) ->
     ?log_warning("Got unexpected message ~p in state ~p with data ~p",
@@ -695,10 +651,10 @@ idle({start_graceful_failover, Node}, _From,
     case ns_rebalancer:start_link_graceful_failover(Node) of
         {ok, Pid} ->
             notify_janitor_finished(JanitorRequests, rebalance_running),
-            ns_config:set([{rebalance_status, running},
-                           {rebalance_status_uuid, couch_uuids:random()},
-                           {graceful_failover_pid, Pid},
-                           {rebalancer_pid, Pid}]),
+
+            Type = graceful_failover,
+            ns_cluster:counter_inc(Type, start),
+            set_rebalance_status(Type, running, Pid),
 
             Nodes = ns_cluster_membership:active_nodes(),
             Progress = rebalance_progress:init(Nodes, [kv]),
@@ -708,7 +664,8 @@ idle({start_graceful_failover, Node}, _From,
                                 eject_nodes = [],
                                 keep_nodes = [],
                                 failed_nodes = [],
-                                progress=Progress}};
+                                progress=Progress,
+                                type=Type}};
         {error, RV} ->
             {reply, RV, idle, State}
     end;
@@ -735,18 +692,18 @@ idle({start_rebalance, KeepNodes, EjectNodes,
             end,
 
             notify_janitor_finished(JanitorRequests, rebalance_running),
-            ns_cluster:counter_inc(rebalance_start),
-            ns_config:set([{rebalance_status, running},
-                           {rebalance_status_uuid, couch_uuids:random()},
-                           {graceful_failover_pid, undefined},
-                           {rebalancer_pid, Pid}]),
+
+            Type = rebalance,
+            ns_cluster:counter_inc(Type, start),
+            set_rebalance_status(Type, running, Pid),
 
             {reply, ok, rebalancing,
              #rebalancing_state{rebalancer=Pid,
                                 progress=rebalance_progress:init(KeepNodes ++ EjectNodes),
                                 keep_nodes=KeepNodes,
                                 eject_nodes=EjectNodes,
-                                failed_nodes=FailedNodes}};
+                                failed_nodes=FailedNodes,
+                                type=Type}};
         {error, no_kv_nodes_left} ->
             {reply, no_kv_nodes_left, idle, State};
         {error, delta_recovery_not_possible} ->
@@ -758,10 +715,10 @@ idle({move_vbuckets, Bucket, Moves}, _From, #idle_state{janitor_requests = Janit
             fun () ->
                     ns_rebalancer:move_vbuckets(Bucket, Moves)
             end),
-    ns_config:set([{rebalance_status, running},
-                   {rebalance_status_uuid, couch_uuids:random()},
-                   {graceful_failover_pid, undefined},
-                   {rebalancer_pid, Pid}]),
+
+    Type = move_vbuckets,
+    ns_cluster:counter_inc(Type, start),
+    set_rebalance_status(Type, running, Pid),
 
     Nodes = ns_cluster_membership:active_nodes(),
     Progress = rebalance_progress:init(Nodes, [kv]),
@@ -771,7 +728,8 @@ idle({move_vbuckets, Bucket, Moves}, _From, #idle_state{janitor_requests = Janit
                         progress=Progress,
                         keep_nodes=ns_node_disco:nodes_wanted(),
                         eject_nodes=[],
-                        failed_nodes=[]}};
+                        failed_nodes=[],
+                        type=Type}};
 idle(stop_rebalance, _From, State) ->
     ns_janitor:stop_rebalance_status(
       fun () ->
@@ -1139,16 +1097,24 @@ is_rebalance_running() ->
     ns_config:search(rebalance_status) =:= {value, running}.
 
 consider_switching_compat_mode() ->
-    CurrentVersion = cluster_compat_mode:get_compat_version(),
+    case consider_switching_compat_mode_dont_exit() of
+        {changed, _, _} ->
+            exit(normal);
+        unchanged ->
+            ok
+    end.
+
+consider_switching_compat_mode_dont_exit() ->
+    OldVersion = cluster_compat_mode:get_compat_version(),
 
     case cluster_compat_mode:consider_switching_compat_mode() of
         changed ->
             NewVersion = cluster_compat_mode:get_compat_version(),
             ale:warn(?USER_LOGGER, "Changed cluster compat mode from ~p to ~p",
-                     [CurrentVersion, NewVersion]),
-            exit(normal);
+                     [OldVersion, NewVersion]),
+            {changed, OldVersion, NewVersion};
         ok ->
-            ok
+            unchanged
     end.
 
 perform_bucket_flushing(BucketName) ->
@@ -1292,3 +1258,182 @@ get_janitor_items() ->
                                                                    ephemeral)],
     Buckets = MembaseBuckets ++ EphemeralBuckets,
     [services | Buckets].
+
+set_rebalance_status(_Type, Status, undefined) ->
+    do_set_rebalance_status(Status, undefined, undefined);
+set_rebalance_status(rebalance, Status, Pid) when is_pid(Pid) ->
+    do_set_rebalance_status(Status, Pid, undefined);
+set_rebalance_status(graceful_failover, Status, Pid) when is_pid(Pid) ->
+    do_set_rebalance_status(Status, Pid, Pid);
+set_rebalance_status(move_vbuckets, Status, Pid) ->
+    set_rebalance_status(rebalance, Status, Pid);
+set_rebalance_status(service_upgrade, Status, Pid) ->
+    set_rebalance_status(rebalance, Status, Pid).
+
+do_set_rebalance_status(Status, RebalancerPid, GracefulPid) ->
+    ns_config:set([{rebalance_status, Status},
+                   {rebalance_status_uuid, couch_uuids:random()},
+                   {rebalancer_pid, GracefulPid},
+                   {graceful_failover_pid, RebalancerPid}]).
+
+cancel_stop_timer(State) ->
+    do_cancel_stop_timer(State#rebalancing_state.stop_timer).
+
+do_cancel_stop_timer(undefined) ->
+    ok;
+do_cancel_stop_timer(TRef) when is_reference(TRef) ->
+    gen_fsm:cancel_timer(TRef).
+
+handle_rebalance_completion(Reason, State) ->
+    cancel_stop_timer(State),
+    maybe_reset_autofailover_count(Reason, State),
+    log_rebalance_completion(Reason, State),
+    update_rebalance_counters(Reason, State),
+    update_rebalance_status(Reason, State),
+    rpc:eval_everywhere(diag_handler, log_all_dcp_stats, []),
+
+    R = consider_switching_compat_mode_dont_exit(),
+    case maybe_start_service_upgrader(Reason, R, State) of
+        {started, NewState} ->
+            {next_state, rebalancing, NewState};
+        not_needed ->
+            maybe_eject_myself(Reason, State),
+            maybe_exit(R, State),
+            {next_state, idle, #idle_state{}}
+    end.
+
+maybe_eject_myself(Reason, State) ->
+    case need_eject_myself(Reason, State) of
+        true ->
+            eject_myself(State);
+        false ->
+            ok
+    end.
+
+need_eject_myself(normal, #rebalancing_state{eject_nodes = EjectNodes,
+                                             failed_nodes = FailedNodes}) ->
+    lists:member(node(), EjectNodes) orelse lists:member(node(), FailedNodes);
+need_eject_myself(_Reason, #rebalancing_state{failed_nodes = FailedNodes}) ->
+    lists:member(node(), FailedNodes).
+
+eject_myself(#rebalancing_state{keep_nodes = KeepNodes}) ->
+    ok = ns_config_rep:ensure_config_seen_by_nodes(KeepNodes),
+    ns_rebalancer:eject_nodes([node()]).
+
+maybe_reset_autofailover_count(normal, #rebalancing_state{type = rebalance}) ->
+    auto_failover:reset_count_async();
+maybe_reset_autofailover_count(_, _) ->
+    ok.
+
+log_rebalance_completion(Reason, #rebalancing_state{type = Type}) ->
+    do_log_rebalance_completion(Reason, Type).
+
+do_log_rebalance_completion(normal, Type) ->
+    ale:info(?USER_LOGGER,
+             "~s completed successfully.", [rebalance_type2text(Type)]);
+do_log_rebalance_completion(stopped, Type) ->
+    ale:info(?USER_LOGGER,
+             "~s stopped by user.", [rebalance_type2text(Type)]);
+do_log_rebalance_completion(Error, Type) ->
+    ale:error(?USER_LOGGER,
+              "~s exited with reason ~p", [rebalance_type2text(Type), Error]).
+
+rebalance_type2text(rebalance) ->
+    <<"Rebalance">>;
+rebalance_type2text(move_vbuckets) ->
+    rebalance_type2text(rebalance);
+rebalance_type2text(graceful_failover) ->
+    <<"Graceful failover">>;
+rebalance_type2text(service_upgrade) ->
+    <<"Service upgrade">>.
+
+update_rebalance_counters(Reason, #rebalancing_state{type = Type}) ->
+    Counter =
+        case Reason of
+            normal ->
+                success;
+            stopped ->
+                stop;
+            _Error ->
+                fail
+        end,
+
+    ns_cluster:counter_inc(Type, Counter).
+
+update_rebalance_status(Reason, #rebalancing_state{type = Type}) ->
+    set_rebalance_status(Type, reason2status(Reason, Type), undefined).
+
+reason2status(normal, _Type) ->
+    none;
+reason2status(stopped, _Type) ->
+    none;
+reason2status(_Error, Type) ->
+    Msg = io_lib:format(
+            "~s failed. See logs for detailed reason. "
+            "You can try again.",
+            [rebalance_type2text(Type)]),
+    {none, iolist_to_binary(Msg)}.
+
+maybe_start_service_upgrader(normal, unchanged, _State) ->
+    not_needed;
+maybe_start_service_upgrader(normal, {changed, OldVersion, NewVersion},
+                             #rebalancing_state{keep_nodes = KeepNodes} = State) ->
+    Old = ns_cluster_membership:topology_aware_services_for_version(OldVersion),
+    New = ns_cluster_membership:topology_aware_services_for_version(NewVersion),
+
+    Services = [S || S <- New -- Old,
+                     ns_cluster_membership:service_nodes(KeepNodes, S) =/= []],
+    case Services of
+        [] ->
+            not_needed;
+        _ ->
+            ale:info(?USER_LOGGER,
+                     "Starting upgrade for the following services: ~p", [Services]),
+            Pid = start_service_upgrader(KeepNodes, Services),
+
+            Type = service_upgrade,
+            set_rebalance_status(Type, running, Pid),
+            ns_cluster:counter_inc(Type, start),
+            Progress = rebalance_progress:init(KeepNodes, Services),
+
+            NewState = State#rebalancing_state{type = Type,
+                                               progress = Progress,
+                                               rebalancer = Pid},
+
+            {started, NewState}
+    end;
+maybe_start_service_upgrader(_Reason, _SwitchCompatResult, _State) ->
+    %% rebalance failed, so we'll just let the user start rebalance again
+    not_needed.
+
+start_service_upgrader(KeepNodes, Services) ->
+    proc_lib:spawn_link(
+      fun () ->
+              Config = ns_config:get(),
+              EjectNodes = [],
+
+              ok = service_janitor:cleanup(Config),
+
+              %% since we are not actually ejecting anything here, we can
+              %% ignore the return value
+              _ = ns_rebalancer:rebalance_topology_aware_services(
+                    Config, Services, KeepNodes, EjectNodes)
+      end).
+
+maybe_exit(SwitchCompatResult, #rebalancing_state{type = Type}) ->
+    case need_exit(SwitchCompatResult, Type) of
+        true ->
+            exit(normal);
+        false ->
+            ok
+    end.
+
+need_exit({changed, _, _}, _Type) ->
+    %% switched compat version, but didn't have to upgrade services
+    true;
+need_exit(_, service_upgrade) ->
+    %% needed to upgrade the services, so we need to exit because we must have
+    %% upgraded the compat version just before that
+    true;
+need_exit(_, _) ->
+    false.

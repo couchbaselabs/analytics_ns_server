@@ -17,26 +17,28 @@
 -include("couch_db.hrl").
 -include("ns_common.hrl").
 
--behaviour(gen_server).
+-behaviour(replicated_storage).
 
 -export([start_link_remote/1,
+         start_replicator/0,
          update_doc/1,
          foreach_doc/2,
          foreach_doc/3,
-         get_doc/1]).
+         get_doc/1,
+         pull_docs/1]).
 
--export([init/1, handle_call/3, handle_cast/2,
-         handle_info/2, terminate/2, code_change/3]).
+-export([init/1, init_after_ack/1, handle_call/3,
+         get_id/1, find_doc/2, get_all_docs/1,
+         get_revision/1, set_revision/2, is_deleted/1, save_doc/2]).
 
--record(state, {rdoc_replicator :: pid(),
-                rep_manager :: pid(),
+-record(state, {rep_manager :: pid(),
                 local_docs = [] :: [#doc{}]}).
 
 -define(DB_NAME, <<"_replicator">>).
 
 start_link_remote(Node) ->
     ReplicationSrvr = erlang:whereis(doc_replication_srv:proxy_server_name(xdcr)),
-    Replicator = erlang:whereis(doc_replicator:server_name(xdcr)),
+    Replicator = erlang:whereis(replicator_name()),
     RepManager = erlang:whereis(xdc_rep_manager),
 
     ?log_debug("Starting xdc_rdoc_manager on ~p with following links: ~p",
@@ -45,22 +47,33 @@ start_link_remote(Node) ->
     true = is_pid(Replicator),
     true = is_pid(RepManager),
 
-    misc:start_link(Node, misc, turn_into_gen_server,
-                    [{local, ?MODULE},
-                     ?MODULE,
-                     {Replicator, ReplicationSrvr, RepManager}, []]).
+    replicated_storage:start_link_remote(Node, ?MODULE, ?MODULE,
+                                         {Replicator, ReplicationSrvr, RepManager}, Replicator).
 
-%% Callbacks
+replicator_name() ->
+    xdcr_doc_replicator.
+
+start_replicator() ->
+    GetRemoteNodes =
+        fun () ->
+                ns_node_disco:nodes_actual_other()
+        end,
+    doc_replicator:start_link(?MODULE, replicator_name(), GetRemoteNodes,
+                              doc_replication_srv:proxy_server_name(xdcr)).
+
+pull_docs(Nodes) ->
+    Timeout = ns_config:read_key_fast(goxdcr_upgrade_timeout, 60000),
+    gen_server:call(replicator_name(), {pull_docs, Nodes, Timeout}, infinity).
+
+%% replicated_storage callbacks
 
 init({Replicator, ReplicationSrvr, RepManager}) ->
-    Self = self(),
+    replicated_storage:anounce_startup(Replicator),
+    replicated_storage:anounce_startup(ReplicationSrvr),
+    replicated_storage:anounce_startup(RepManager),
+    #state{rep_manager = RepManager}.
 
-    ns_couchdb_api:register_doc_manager(Replicator),
-    ns_couchdb_api:register_doc_manager(ReplicationSrvr),
-    ns_couchdb_api:register_doc_manager(RepManager),
-
-    proc_lib:init_ack({ok, Self}),
-
+init_after_ack(State) ->
     ok = misc:wait_for_local_name(couch_server, 10000),
 
     {ok, Db} = open_or_create_replicator_db(),
@@ -70,34 +83,40 @@ init({Replicator, ReplicationSrvr, RepManager}) ->
            after
                ok = couch_db:close(Db)
            end,
-    Self ! replicate_newnodes_docs,
-
     ?log_debug("Loaded the following docs:~n~p", [Docs]),
-    gen_server:enter_loop(?MODULE, [],
-                          #state{local_docs=Docs,
-                                 rdoc_replicator = Replicator,
-                                 rep_manager = RepManager}).
+    State#state{local_docs = Docs}.
 
-handle_call({interactive_update, #doc{id=Id}=Doc}, _From, State) ->
-    #state{local_docs=Docs}=State,
-    Rand = crypto:rand_uniform(0, 16#100000000),
-    RandBin = <<Rand:32/integer>>,
-    NewRev = case lists:keyfind(Id, #doc.id, Docs) of
-                 false ->
-                     {1, RandBin};
-                 #doc{rev = {Pos, _DiskRev}} ->
-                     {Pos + 1, RandBin}
-             end,
-    NewDoc = Doc#doc{rev=NewRev},
+get_id(#doc{id = Id}) ->
+    Id.
+
+find_doc(Id, #state{local_docs = Docs}) ->
+    lists:keyfind(Id, #doc.id, Docs).
+
+get_all_docs(#state{local_docs = Docs}) ->
+    Docs.
+
+get_revision(#doc{rev = Rev}) ->
+    Rev.
+
+set_revision(Doc, NewRev) ->
+    Doc#doc{rev = NewRev}.
+
+is_deleted(_) ->
+    false.
+
+save_doc(#doc{id = Id} = Doc,
+         #state{local_docs = Docs,
+                rep_manager = RepManager}=State) ->
+    RepManager ! {rep_db_update, Doc},
+
+    {ok, Db} = open_replicator_db(),
     try
-        ?log_debug("Writing interactively saved ddoc ~p", [Doc]),
-        NewState = save_doc(NewDoc, State),
-        NewState#state.rdoc_replicator ! {replicate_change, NewDoc},
-        {reply, ok, NewState}
-    catch throw:{invalid_design_doc, _} = Error ->
-            ?log_debug("Document validation failed: ~p", [Error]),
-            {reply, Error, State}
-    end;
+        ok = couch_db:update_doc(Db, Doc)
+    after
+        ok = couch_db:close(Db)
+    end,
+    {ok, State#state{local_docs = lists:keystore(Id, #doc.id, Docs, Doc)}}.
+
 handle_call({foreach_doc, Fun}, _From, #state{local_docs = Docs} = State) ->
     Res = [{Id, Fun(Doc)} || #doc{id = Id} = Doc <- Docs],
     {reply, Res, State};
@@ -115,50 +134,7 @@ handle_call(get_all_docs, _From, #state{local_docs = Docs} = State) ->
 handle_call(sync, _From, State) ->
     {reply, ok, State}.
 
-save_doc(#doc{id = Id} = Doc,
-         #state{local_docs = Docs,
-                rep_manager = RepManager}=State) ->
-    RepManager ! {rep_db_update, Doc},
-
-    {ok, Db} = open_replicator_db(),
-    try
-        ok = couch_db:update_doc(Db, Doc)
-    after
-        ok = couch_db:close(Db)
-    end,
-    State#state{local_docs = lists:keystore(Id, #doc.id, Docs, Doc)}.
-
-handle_cast({replicated_update, #doc{id=Id, rev=Rev}=Doc}, State) ->
-    %% this is replicated from another node in the cluster. We only accept it
-    %% if it doesn't exist or the rev is higher than what we have.
-    #state{local_docs=Docs} = State,
-    Proceed = case lists:keyfind(Id, #doc.id, Docs) of
-                  false ->
-                      true;
-                  #doc{rev = DiskRev} when Rev > DiskRev ->
-                      true;
-                  _ ->
-                      false
-              end,
-    if Proceed ->
-            ?log_debug("Writing replicated ddoc ~p", [Doc]),
-            {noreply, save_doc(Doc, State)};
-       true ->
-            {noreply, State}
-    end.
-
-
-handle_info(replicate_newnodes_docs, #state{local_docs = Docs} = State) ->
-    State#state.rdoc_replicator ! {replicate_newnodes_docs, Docs},
-    {noreply, State}.
-
-terminate(_Reason, _State) ->
-    ok.
-
-
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
-
+%% internal
 
 update_doc(Doc) ->
     gen_server:call(?MODULE,

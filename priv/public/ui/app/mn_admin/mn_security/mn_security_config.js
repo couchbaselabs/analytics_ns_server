@@ -2,7 +2,7 @@
   "use strict";
 
   angular.module('mnSecurity', [
-    'mnExternalRoles',
+    'mnUserRoles',
     'mnPluggableUiRegistry',
     'mnRootCertificate',
     'mnElementCrane'
@@ -23,22 +23,20 @@
           title: "Security"
         }
       })
-      .state('app.admin.security.externalRoles', {
-        url: "/externalRoles",
-        controller: "mnExternalRolesController as externalRolesCtl",
-        templateUrl: "app/mn_admin/mn_security/mn_external_roles/mn_external_roles.html",
+      .state('app.admin.security.userRoles', {
+        url: "/userRoles?openedUsers",
+        params: {
+          openedUsers: {
+            array: true,
+            dynamic: true
+          }
+        },
+        controller: "mnUserRolesController as userRolesCtl",
+        templateUrl: "app/mn_admin/mn_security/mn_user_roles/mn_user_roles.html",
         data: {
           compat: "atLeast45",
           ldap: true,
           enterprise: true
-        }
-      })
-      .state('app.admin.security.internalRoles', {
-        url: '/internalRoles',
-        controller: 'mnInternalRolesController as internalRolesCtl',
-        templateUrl: 'app/mn_admin/mn_security/mn_internal_roles/mn_internal_roles.html',
-        data: {
-          permissions: "cluster.admin.security.write"
         }
       })
       .state('app.admin.security.rootCertificate', {

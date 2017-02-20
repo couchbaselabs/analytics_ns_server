@@ -149,6 +149,7 @@ header h1 {
 
 header h1 .icon {
   padding: 0 .25rem;
+  font-size: inherit;
 }
 
 h1 > * {
@@ -454,9 +455,11 @@ table th span.has-menu:after {
   font-family: FontAwesome;
   content: "\f0da";
   font-size: 1rem;
+  width: 1rem;
+  text-align: center;
   color: #333;
   position: absolute;
-  top: 0;
+  top: -1px;
   left: 0;
   text-decoration:none;
 }
@@ -464,9 +467,11 @@ table th span.has-menu:after {
   font-family: FontAwesome;
   content: "\f0d7";
   font-size: 1rem;
+  width: 1rem;
+  text-align: center;
   color: #333;
   position: absolute;
-  top: 0;
+  top: -1px;
   left: 0;
   text-decoration:none;
 }
@@ -1270,6 +1275,7 @@ meter {
   padding: 0 0.5rem 0 0;
   margin: 0 3px 3px 0;
   cursor: default;
+  height: 2rem;
 }
 .ui-select-multiple.ui-select-bootstrap .ui-select-match .close {
   display: inline-block;
@@ -1436,3 +1442,68 @@ meter {
 .match_indicator .match  {display: none;}
 
 .read-only-editor {opacity:.5;}
+
+
+/* info popup styles ************************** */
+.icon-info {
+  cursor: pointer;
+  color: #a1a1a1;
+  font-size: 1.125rem;
+}
+.icon-info:hover {
+  color: #000;
+}
+.icon-info .fa-stack-1x {
+  line-height: inherit;
+  font-size: .5em;
+  top: 1px;
+}
+label + .fa-stack { /* elevate info icon next to regular label */
+  top: -4px;
+}
+
+ /*Custom Radio Buttons and Checkboxes using Font Awesome*/
+
+input[type="radio"],
+input[type="checkbox"] {
+  display: none;
+}
+input[type="radio"] + label,
+input[type="checkbox"] + label {
+  display: inline-block;
+  font-weight: normal;
+  cursor: pointer;
+  font-size: .875rem;
+  margin-right: 1rem;
+}
+input[type="radio"] + label:last-child,
+input[type="checkbox"] + label:last-child {
+  margin-right: 0;
+}
+input[type="checkbox"] + label:before,
+input[type="radio"] + label:before {
+  position: relative;
+  display: inline-block;
+  font: normal normal normal 16px/1 FontAwesome;
+  color: #a1a1a1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  width: .96rem;
+}
+input[type="checkbox"] + label:before {
+  top: 1px;
+}
+input[type="radio"] + label:before {
+  content: "\f1db"; /* Radio Unchecked */
+}
+input[type="radio"]:checked + label:before {
+  content: "\f05d"; /* Radio Checked */
+  color: #555;
+}
+input[type="checkbox"] + label:before {
+  content: "\f096"; /* Checkbox Unchecked */
+}
+input[type="checkbox"]:checked + label:before {
+  content: "\f046"; /* Checkbox Checked */
+  color: #555;
+}
