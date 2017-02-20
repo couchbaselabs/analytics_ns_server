@@ -20,7 +20,8 @@
         .showGlobalSpinner()
         .catchErrors()
         .closeFinally()
-        .reloadState();
+        .reloadState("app.admin.servers.list.groups")
+        .showGlobalSuccess("Group deleted successfully!", 4000);
     }
   }
 })();
