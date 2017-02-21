@@ -105,8 +105,7 @@
     function getSelfConfig() {
       return $http({
         method: 'GET',
-        url: '/nodes/self',
-        responseType: 'json'
+        url: '/nodes/self'
       }).then(function (resp) {
         var nodeConfig = resp.data;
         var ram = nodeConfig.storageTotals.ram;

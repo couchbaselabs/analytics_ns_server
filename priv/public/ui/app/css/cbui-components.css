@@ -1468,6 +1468,7 @@ meter {
 .match_indicator .match  {display: none;}
 
 .read-only-editor {opacity:.5;}
+.read-only-editor .CodeMirror-cursor { visibility: hidden!important; }
 
 
 /* info popup styles ************************** */
@@ -1532,4 +1533,26 @@ input[type="checkbox"] + label:before {
 input[type="checkbox"]:checked + label:before {
   content: "\f046"; /* Checkbox Checked */
   color: #555;
+}
+
+/* user menu --------------------*/
+
+.user-dropdown-menu {
+  background-color: #fff;
+  position: absolute;
+  top: 20px;
+  right: 10px;
+  z-index: 10;
+  padding: .5rem 2rem;
+}
+.user-dropdown-menu a:link {
+  font-size: 1rem;
+  line-height:1.8rem;
+  display:block;
+}
+.user-dropdown-menu a:hover {
+  background-color:#eceff2;
+  padding:0 2rem;
+  margin:0 -2rem;
+  transition: none;
 }
