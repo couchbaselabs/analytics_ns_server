@@ -1,6 +1,6 @@
 <div mn-spinner="!userRolesCtl.state || userRolesCtl.viewLoading" min-height="300px">
-  <div class="interim row">
-    <span>
+  <div class="interim row" ng-class="{'flex-right': !userRolesCtl.isLdapEnabled}">
+    <span ng-if="userRolesCtl.isLdapEnabled">
       <span
          class="icon"
          ng-class="{
@@ -72,6 +72,9 @@
             <button
                class="outline"
                ng-click="userRolesCtl.deleteUser(user)">Delete</button>
+            <button
+               ng-show="user.type !== 'saslauthd'"
+               ng-click="userRolesCtl.resetUserPassword(user)">Reset Password</button>
             <button
                ng-click="userRolesCtl.editUser(user)">Edit</button>
           </td>
