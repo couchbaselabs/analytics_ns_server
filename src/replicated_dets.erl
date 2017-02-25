@@ -17,24 +17,35 @@
 
 -module(replicated_dets).
 
+-include("ns_common.hrl").
+-include("pipes.hrl").
+
 -behaviour(replicated_storage).
 
--export([start_link/3, set/3, delete/2, get/2]).
+-export([start_link/6, set/3, delete/2, get/2, get/3, select/3, empty/1]).
 
--export([init/1, init_after_ack/1, handle_call/3,
+-export([init/1, init_after_ack/1, handle_call/3, handle_info/2,
          get_id/1, find_doc/2, get_all_docs/1,
          get_revision/1, set_revision/2, is_deleted/1, save_doc/2]).
 
--record(state, {path :: string(),
-                name :: string()}).
+-record(state, {child_module :: atom(),
+                child_state :: term(),
+                path :: string(),
+                name :: string(),
+                cache :: pid()}).
 
 -record(doc, {id :: term(),
               rev :: term(),
               deleted :: boolean(),
               value :: term()}).
 
-start_link(Name, Path, Replicator) ->
-    replicated_storage:start_link(Name, ?MODULE, [Name, Path, Replicator], Replicator).
+cache_name(Name) ->
+    list_to_atom(atom_to_list(Name) ++ "_cache").
+
+start_link(ChildModule, InitParams, Name, Path, Replicator, CacheSize) ->
+    replicated_storage:start_link(Name, ?MODULE,
+                                  [Name, ChildModule, InitParams, Path, Replicator, CacheSize],
+                                  Replicator).
 
 set(Name, Id, Value) ->
     gen_server:call(Name, {interactive_update, #doc{id = Id,
@@ -48,13 +59,47 @@ delete(Name, Id) ->
                                                     deleted = true,
                                                     value = []}}, infinity).
 
-get(Name, Id) ->
-    gen_server:call(Name, {get, Id}, infinity).
+empty(Name) ->
+    gen_server:call(Name, empty, infinity).
 
-init([Name, Path, Replicator]) ->
+get(TableName, Id) ->
+    case lru_cache:lookup(cache_name(TableName), Id) of
+        {ok, V} ->
+            {Id, V};
+        false ->
+            case dets:lookup(TableName, Id) of
+                [#doc{id = Id, deleted = false, value = Value}] ->
+                    TableName ! {cache, Id},
+                    {Id, Value};
+                [#doc{id = Id, deleted = true}] ->
+                    false;
+                [] ->
+                    false
+            end
+    end.
+
+get(Name, Id, Default) ->
+    case get(Name, Id) of
+        false ->
+            Default;
+        {Id, Value} ->
+            Value
+    end.
+
+select(Name, KeySpec, N) ->
+    DocSpec = #doc{id = KeySpec, deleted = false, _ = '_'},
+    MatchSpec = [{DocSpec, [], ['$_']}],
+    ?make_producer(select_from_dets(Name, MatchSpec, N, ?yield())).
+
+init([Name, ChildModule, InitParams, Path, Replicator, CacheSize]) ->
     replicated_storage:anounce_startup(Replicator),
+    ChildState = ChildModule:init(InitParams),
+    {ok, Cache} = lru_cache:start_link(cache_name(Name), CacheSize),
     #state{name = Name,
-           path = Path}.
+           path = Path,
+           child_module = ChildModule,
+           child_state = ChildState,
+           cache = Cache}.
 
 init_after_ack(State) ->
     ok = open(State),
@@ -95,17 +140,79 @@ set_revision(Doc, NewRev) ->
 is_deleted(#doc{deleted = Deleted}) ->
     Deleted.
 
-save_doc(Doc, #state{name = TableName} = State) ->
+save_doc(#doc{id = Id,
+              deleted = Deleted,
+              value = Value} = Doc,
+         #state{name = TableName,
+                child_module = ChildModule,
+                child_state = ChildState,
+                cache = Cache} = State) ->
     ok = dets:insert(TableName, [Doc]),
-    {ok, State}.
+    NewChildState = ChildModule:on_save(Id, ChildState),
+    case Deleted of
+        true ->
+            _ = lru_cache:delete(Cache, Id);
+        false ->
+            _ = lru_cache:update(Cache, Id, Value)
+    end,
+    {ok, State#state{child_state = NewChildState}}.
 
-handle_call({get, Id}, _From, #state{name = TableName} = State) ->
-    RV = case dets:lookup(TableName, Id) of
-             [#doc{id = Id, deleted = false, value = Value}] ->
-                 {Id, Value};
-             [#doc{id = Id, deleted = true}] ->
-                 false;
-             [] ->
-                 false
-         end,
-    {reply, RV, State}.
+handle_call(suspend, {Pid, _} = From, #state{name = TableName} = State) ->
+    MRef = erlang:monitor(process, Pid),
+    ?log_debug("Suspended by process ~p", [Pid]),
+    gen_server:reply(From, {ok, TableName}),
+    receive
+        {'DOWN', MRef, _, _, _} ->
+            ?log_info("Suspending process ~p died", [Pid]),
+            {noreply, State};
+        release ->
+            ?log_debug("Released by process ~p", [Pid]),
+            erlang:demonitor(MRef, [flush]),
+            {noreply, State}
+    end;
+handle_call(empty, _From, #state{name = TableName,
+                                 child_module = ChildModule,
+                                 child_state = ChildState,
+                                 cache = Cache} = State) ->
+    ok = dets:delete_all_objects(TableName),
+    NewChildState = ChildModule:on_empty(ChildState),
+    lru_cache:flush(Cache),
+    {reply, ok, State#state{child_state = NewChildState}}.
+
+handle_info({cache, Id} = Msg, #state{name = TableName,
+                                      cache = Cache} = State) ->
+    case dets:lookup(TableName, Id) of
+        [#doc{id = Id, deleted = false, value = Value}] ->
+            _ = lru_cache:add(Cache, Id, Value);
+        _ ->
+            ok
+    end,
+    misc:flush(Msg),
+    {noreply, State}.
+
+select_from_dets(Name, MatchSpec, N, Yield) ->
+    {ok, TableName} = gen_server:call(Name, suspend, infinity),
+    dets:safe_fixtable(TableName, true),
+    do_select_from_dets(TableName, MatchSpec, N, Yield),
+    dets:safe_fixtable(Name, false),
+    Name ! release,
+    ok.
+
+do_select_from_dets(TableName, MatchSpec, N, Yield) ->
+    case dets:select(TableName, MatchSpec, N) of
+        {Selection, Continuation} when is_list(Selection) ->
+            do_select_from_dets_continue(Selection, Continuation, Yield);
+        '$end_of_table' ->
+            ok
+    end.
+
+do_select_from_dets_continue(Selection, Continuation, Yield) ->
+    lists:foreach(fun (#doc{id = Id, value = Value}) ->
+                          Yield({Id, Value})
+                  end, Selection),
+    case dets:select(Continuation) of
+        {Selection2, Continuation2} when is_list(Selection2) ->
+            do_select_from_dets_continue(Selection2, Continuation2, Yield);
+        '$end_of_table' ->
+            ok
+    end.

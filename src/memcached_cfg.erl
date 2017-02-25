@@ -32,7 +32,7 @@
 -callback init() -> term().
 -callback filter_event(term()) -> boolean().
 -callback handle_event(term(), term()) -> {changed, term()} | unchanged.
--callback generate(term()) -> binary().
+-callback producer(term()) -> pipes:producer(iolist()).
 -callback refresh() -> term().
 
 -include("ns_common.hrl").
@@ -61,15 +61,17 @@ start_link(Module, Path) ->
 init([Module, Path]) ->
     ?log_debug("Init config writer for ~p, ~p", [Module, Path]),
     Pid = self(),
-    ns_pubsub:subscribe_link(ns_config_events,
-                             fun (Evt, _) ->
-                                     case Module:filter_event(Evt) of
-                                         true ->
-                                             gen_server:cast(Pid, Evt);
-                                         false ->
-                                             ok
-                                     end
-                             end, ignored),
+    EventHandler =
+        fun (Evt) ->
+                case Module:filter_event(Evt) of
+                    true ->
+                        gen_server:cast(Pid, Evt);
+                    false ->
+                        ok
+                end
+        end,
+    ns_pubsub:subscribe_link(ns_config_events, EventHandler),
+    ns_pubsub:subscribe_link(user_storage_events, EventHandler),
 
     Stuff = Module:init(),
     State = #state{path = Path,
@@ -78,17 +80,14 @@ init([Module, Path]) ->
                    module = Module,
                    write_pending = false},
 
-    Content = Module:generate(Stuff),
-    ok = write_cfg(State, Content),
+    ok = write_cfg(State),
     {ok, State}.
 
 terminate(_Reason, _State)     -> ok.
 code_change(_OldVsn, State, _) -> {ok, State}.
 
-handle_cast(write_cfg, State = #state{module = Module,
-                                      stuff = Stuff}) ->
-    Content = Module:generate(Stuff),
-    ok = write_cfg(State, Content),
+handle_cast(write_cfg, State) ->
+    ok = write_cfg(State),
     {noreply, State#state{write_pending = false}};
 handle_cast(Evt, State = #state{module = Module,
                                 stuff = Stuff}) ->
@@ -112,10 +111,17 @@ initiate_write(#state{module = Module} = State) ->
     State#state{write_pending = true}.
 
 write_cfg(#state{path = Path,
-                 tmp_path = TmpPath} = State, Content) ->
+                 tmp_path = TmpPath,
+                 stuff = Stuff,
+                 module = Module} = State) ->
     ok = filelib:ensure_dir(TmpPath),
     ?log_debug("Writing config file for: ~p", [Path]),
-    misc:write_file(TmpPath, Content),
+    misc:write_file(
+      TmpPath,
+      fun (File) ->
+              pipes:run(Module:producer(Stuff),
+                        pipes:write_file(File))
+      end),
     rename_and_refresh(State, 5, 101).
 
 rename_and_refresh(#state{path = Path,

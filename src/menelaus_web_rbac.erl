@@ -19,6 +19,7 @@
 -module(menelaus_web_rbac).
 
 -include("ns_common.hrl").
+-include("pipes.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
 
@@ -212,7 +213,15 @@ handle_get_users(Req) ->
     menelaus_web:assert_is_enterprise(),
     menelaus_web:assert_is_45(),
 
-    Users = menelaus_users:get_users(ns_config:latest()),
+    case cluster_compat_mode:is_cluster_spock() of
+        true ->
+            handle_get_users_spock(Req);
+        false ->
+            handle_get_users_45(Req)
+    end.
+
+handle_get_users_45(Req) ->
+    Users = menelaus_users:get_users_45(ns_config:latest()),
     Json = lists:map(
              fun ({Identity, Props}) ->
                      Roles = proplists:get_value(roles, Props, []),
@@ -220,10 +229,31 @@ handle_get_users(Req) ->
              end, Users),
     menelaus_util:reply_json(Req, Json).
 
+handle_get_users_spock(Req) ->
+    pipes:run(menelaus_users:select_users('_'),
+              [jsonify_users(),
+               sjson:encode_extended_json([{compact, false},
+                                           {strict, false}]),
+               pipes:simple_buffer(2048)],
+              menelaus_util:send_chunked(Req, 200, [{"Content-Type", "application/json"}])).
+
+jsonify_users() ->
+    ?make_transducer(
+       begin
+           ?yield(array_start),
+           pipes:foreach(?producer(),
+                         fun ({{user, Identity}, Props}) ->
+                                 Roles = proplists:get_value(roles, Props, []),
+                                 Name = proplists:get_value(name, Props),
+                                 ?yield({json, get_user_json(Identity, Name, Roles)})
+                         end),
+           ?yield(array_end)
+       end).
+
 handle_whoami(Req) ->
     Identity = menelaus_auth:get_identity(Req),
     Roles = menelaus_roles:get_roles(Identity),
-    Name = menelaus_users:get_user_name(ns_config:latest(), Identity),
+    Name = menelaus_users:get_user_name(Identity),
     menelaus_util:reply_json(Req, get_user_json(Identity, Name, Roles)).
 
 parse_until(Str, Delimeters) ->
@@ -364,7 +394,7 @@ handle_put_user_validated(Identity, Name, Password, RawRoles, Req) ->
             case menelaus_users:store_user(Identity, Name, Password, Roles) of
                 {commit, _} ->
                     ns_audit:set_user(Req, Identity, Roles, Name),
-                    handle_get_users(Req);
+                    reply_put_delete_users(Req);
                 {abort, {error, roles_validation, UnknownRoles}} ->
                     reply_bad_roles(Req, [role_to_string(UR) || UR <- UnknownRoles]);
                 {abort, password_required} ->
@@ -387,12 +417,20 @@ handle_delete_user(Type, UserId, Req) ->
             case menelaus_users:delete_user(Identity) of
                 {commit, _} ->
                     ns_audit:delete_user(Req, Identity),
-                    handle_get_users(Req);
+                    reply_put_delete_users(Req);
                 {abort, {error, not_found}} ->
                     menelaus_util:reply_json(Req, <<"User was not found.">>, 404);
                 retry_needed ->
                     erlang:error(exceeded_retries)
             end
+    end.
+
+reply_put_delete_users(Req) ->
+    case cluster_compat_mode:is_cluster_spock() of
+        true ->
+            menelaus_util:reply_json(Req, <<>>, 200);
+        false ->
+            handle_get_users_45(Req)
     end.
 
 validate_change_password(Args) ->
@@ -419,6 +457,8 @@ handle_change_password(Req) ->
             case menelaus_auth:get_identity(Req) of
                 {_, builtin} = Identity ->
                     handle_change_password_with_identity(Req, Identity);
+                {_, admin} = Identity ->
+                    handle_change_password_with_identity(Req, Identity);
                 _ ->
                     menelaus_util:reply_json(
                       Req, <<"Changing of password is not allowed for this user.">>, 404)
@@ -430,16 +470,19 @@ handle_change_password(Req) ->
 handle_change_password_with_identity(Req, Identity) ->
     menelaus_util:execute_if_validated(
       fun (Values) ->
-              case menelaus_users:change_password(Identity, proplists:get_value(password, Values)) of
-                  {commit, _} ->
+              case do_change_password(Identity, proplists:get_value(password, Values)) of
+                  ok ->
                       ns_audit:password_change(Req, Identity),
                       menelaus_util:reply(Req, 200);
-                  {abort, user_not_found} ->
-                      menelaus_util:reply_json(Req, <<"User was not found.">>, 404);
-                retry_needed ->
-                    erlang:error(exceeded_retries)
+                  user_not_found ->
+                      menelaus_util:reply_json(Req, <<"User was not found.">>, 404)
               end
       end, Req, validate_change_password(Req:parse_post())).
+
+do_change_password({_, builtin} = Identity, Password) ->
+    menelaus_users:change_password(Identity, Password);
+do_change_password({User, admin}, Password) ->
+    ns_config_auth:set_credentials(admin, User, Password).
 
 handle_settings_read_only_admin_name(Req) ->
     case ns_config_auth:get_user(ro_admin) of
@@ -650,9 +693,8 @@ handle_check_permissions_post(Req) ->
     end.
 
 check_permissions_url_version(Config) ->
-    Users = menelaus_users:get_users(Config),
     erlang:phash2([menelaus_roles:get_definitions(Config),
-                   [{Identity, proplists:get_value(roles, Props)} || {Identity, Props} <- Users],
+                   menelaus_users:get_users_version(),
                    ns_bucket:get_bucket_names(ns_bucket:get_buckets(Config)),
                    ns_config_auth:get_no_auth_buckets(Config)]).
 

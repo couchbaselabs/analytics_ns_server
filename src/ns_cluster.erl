@@ -1058,6 +1058,10 @@ perform_actual_join(RemoteNode, NewCookie) ->
                  [node(), RemoteNode]),
     %% let ns_memcached know that we don't need to preserve data at all
     ns_config:set(i_am_a_dead_man, true),
+
+    %% empty users storage
+    menelaus_users:empty_storage(),
+
     %% Pull the rug out from under the app
     misc:create_marker(start_marker_path()),
     ok = ns_server_cluster_sup:stop_ns_server(),
@@ -1100,6 +1104,8 @@ perform_actual_join(RemoteNode, NewCookie) ->
                                  %% update for the sake of incrementing the
                                  %% vclock
                                  {update, Pair};
+                             ({roles_definitions, _}) ->
+                                 {set_initial, {roles_definitions, undefined}};
                              (_) ->
                                  erase
                          end),
