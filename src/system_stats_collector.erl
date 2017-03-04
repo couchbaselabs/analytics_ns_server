@@ -31,7 +31,8 @@
 %% callbacks
 -export([init/1, grab_stats/1, process_stats/5]).
 
--export([increment_counter/2, get_ns_server_stats/0, set_counter/2,
+-export([increment_counter/1, increment_counter/2,
+         get_ns_server_stats/0, set_counter/2,
          add_histo/2,
          cleanup_stale_epoch_histos/0, log_system_stats/1,
          stale_histo_epoch_cleaner/0]).
@@ -321,8 +322,16 @@ process_stats(TS, Binary, PrevSample, _, State) ->
     sample_ns_memcached_queues(),
     {RetStats, NewPrevSample, State}.
 
+increment_counter(Name) ->
+    increment_counter(Name, 1).
+
 increment_counter(Name, By) ->
-    (catch do_increment_counter(Name, By)).
+    try
+        do_increment_counter(Name, By)
+    catch
+        _:_ ->
+            ok
+    end.
 
 do_increment_counter(Name, By) ->
     ets:insert_new(ns_server_system_stats, {Name, 0}),
@@ -451,6 +460,7 @@ get_histo_bin(Value) when Value > 2000000 -> 4000000;
 get_histo_bin(Value) when Value > 1000000 -> 2000000;
 get_histo_bin(Value) ->
     Step = if
+               Value < 100 -> 10;
                Value < 1000 -> 100;
                Value < 10000 -> 1000;
                Value =< 1000000 -> 10000
