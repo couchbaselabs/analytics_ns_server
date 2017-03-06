@@ -45,9 +45,9 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([get_definitions/1,
-         preconfigured_roles/0,
-         preconfigured_roles_45/0,
+-export([get_definitions/0,
+         get_definitions/1,
+         roles_45/0,
          is_allowed/2,
          get_roles/1,
          get_compiled_roles/1,
@@ -55,12 +55,8 @@
          get_all_assignable_roles/1,
          validate_roles/2]).
 
--spec preconfigured_roles() -> [rbac_role_def(), ...].
-preconfigured_roles() ->
-    upgrade_roles_spock(preconfigured_roles_45()) ++ preconfigured_roles_spock().
-
--spec preconfigured_roles_45() -> [rbac_role_def(), ...].
-preconfigured_roles_45() ->
+-spec roles_45() -> [rbac_role_def(), ...].
+roles_45() ->
     [{admin, [],
       [{name, <<"Admin">>},
        {desc, <<"Can manage ALL cluster features including security.">>}],
@@ -93,6 +89,7 @@ preconfigured_roles_45() ->
       [{[{bucket, bucket_name}, data], all},
        {[{bucket, bucket_name}, views], all},
        {[{bucket, bucket_name}], [read, flush]},
+       {[{bucket, bucket_name}, n1ql], [execute]},
        {[pools], [read]}]},
      {views_admin, [bucket_name],
       [{name, <<"Views Admin">>},
@@ -101,6 +98,7 @@ preconfigured_roles_45() ->
        {[{bucket, bucket_name}, data], [read]},
        {[{bucket, any}, settings], [read]},
        {[{bucket, any}], none},
+       {[{bucket, bucket_name}, n1ql], [execute]},
        {[xdcr], none},
        {[admin], none},
        {[], [read]}]},
@@ -115,16 +113,74 @@ preconfigured_roles_45() ->
        {[admin], none},
        {[], [read]}]}].
 
--spec preconfigured_roles_spock() -> [rbac_role_def(), ...].
-preconfigured_roles_spock() ->
-    [{data_reader, [bucket_name],
+-spec roles_spock() -> [rbac_role_def(), ...].
+roles_spock() ->
+    [{admin, [],
+      [{name, <<"Admin">>},
+       {desc, <<"Can manage ALL cluster features including security.">>},
+       {ce, true}],
+      [{[], all}]},
+     {ro_admin, [],
+      [{name, <<"Read Only Admin">>},
+       {desc, <<"Can view ALL cluster features.">>},
+       {ce, true}],
+      [{[{bucket, any}, password], none},
+       {[{bucket, any}, data], none},
+       {[admin, security], [read]},
+       {[admin], none},
+       {[], [read]}]},
+     {cluster_admin, [],
+      [{name, <<"Cluster Admin">>},
+       {desc, <<"Can manage all cluster features EXCEPT security.">>}],
+      [{[admin], none},
+       {[], all}]},
+     {bucket_admin, [bucket_name],
+      [{name, <<"Bucket Admin">>},
+       {desc, <<"Can manage ALL bucket features for specified buckets (incl. start/stop XDCR)">>}],
+      [{[{bucket, bucket_name}, xdcr], [read, execute]},
+       {[{bucket, bucket_name}], all},
+       {[{bucket, any}, settings], [read]},
+       {[{bucket, any}], none},
+       {[xdcr], none},
+       {[admin], none},
+       {[], [read]}]},
+     {bucket_sasl, [bucket_name],
+      [{name, <<"Bucket Full Access">>},
+       {desc, <<"Full access to bucket data">>},
+       {ce, true}],
+      [{[{bucket, bucket_name}, data], all},
+       {[{bucket, bucket_name}, views], all},
+       {[{bucket, bucket_name}], [read, flush]},
+       {[{bucket, bucket_name}, n1ql], [execute]},
+       {[pools], [read]}]},
+     {views_admin, [bucket_name],
+      [{name, <<"Views Admin">>},
+       {desc, <<"Can manage views for specified buckets">>}],
+      [{[{bucket, bucket_name}, views], all},
+       {[{bucket, bucket_name}, data], [read]},
+       {[{bucket, any}, settings], [read]},
+       {[{bucket, any}], none},
+       {[{bucket, bucket_name}, n1ql], [execute]},
+       {[xdcr], none},
+       {[admin], none},
+       {[], [read]}]},
+     {replication_admin, [],
+      [{name, <<"Replication Admin">>},
+       {desc, <<"Can manage ONLY XDCR features (cluster AND bucket level)">>}],
+      [{[{bucket, any}, xdcr], all},
+       {[{bucket, any}, data], [read]},
+       {[{bucket, any}, settings], [read]},
+       {[{bucket, any}], none},
+       {[xdcr], all},
+       {[admin], none},
+       {[], [read]}]},
+     {data_reader, [bucket_name],
       [{name, <<"Data Reader">>},
        {desc, <<"Can read information from specified bucket">>}],
       [{[{bucket, bucket_name}, stats], [read]},
        {[{bucket, bucket_name}, data, docs], [read]},
        {[{bucket, bucket_name}, data, meta], [read]},
        {[{bucket, bucket_name}, data, xattr], [read]},
-       {[{bucket, bucket_name}, n1ql], [execute]},
        {[pools], [read]}]},
      {data_reader_writer, [bucket_name],
       [{name, <<"Data Reader Writer">>},
@@ -133,7 +189,6 @@ preconfigured_roles_spock() ->
        {[{bucket, bucket_name}, data, docs], [read, write]},
        {[{bucket, bucket_name}, data, meta], [read, write]},
        {[{bucket, bucket_name}, data, xattr], [read, write]},
-       {[{bucket, bucket_name}, n1ql], [execute]},
        {[pools], [read]}]},
      {data_dcp_reader, [bucket_name],
       [{name, <<"Data DCP Reader">>},
@@ -185,43 +240,36 @@ preconfigured_roles_spock() ->
      {query_manage_index, [bucket_name],
       [{name, <<"Query Manage Index">>},
        {desc, <<"Can manage indexes for the bucket">>}],
-      [{[{bucket, bucket_name}, n1ql, create_index], [execute]},
-       {[{bucket, bucket_name}, n1ql, alter_index], [execute]},
+      [{[{bucket, bucket_name}, n1ql, index], all},
        {[pools], [read]}]},
      {query_system_catalog, [bucket_name],
       [{name, <<"Query System Catalog">>},
        {desc, <<"Can lookup system catalog information">>}],
-      [{[{bucket, bucket_name}, n1ql, list_indexes], [execute]},
+      [{[{bucket, bucket_name}, n1ql, index], [list]},
        {[n1ql, meta], [read]},
        {[pools], [read]}]}].
 
-upgrade_roles_spock(Definitions) ->
-    D1 = upgrade_role_add_permission(Definitions, views_admin,
-                                     {[{bucket, bucket_name}, n1ql], [execute]}),
-    upgrade_role_add_permission(D1, bucket_sasl,
-                                {[{bucket, bucket_name}, n1ql], [execute]}).
+-spec get_definitions() -> [rbac_role_def(), ...].
+get_definitions() ->
+    get_definitions(ns_config:latest()).
 
-upgrade_role_add_permission(Definitions, Role, Permission) ->
-    {value, {Role, Params, Info, Permissions}} =
-        lists:keysearch(Role, 1, Definitions),
-    lists:keyreplace(Role, 1, Definitions,
-                     {Role, Params, Info,
-                      [Permission | Permissions]}).
-
--spec get_definitions(ns_config()) -> [rbac_role_def(), ...] | undefined.
+-spec get_definitions(ns_config()) -> [rbac_role_def(), ...].
 get_definitions(Config) ->
-    {value, RolesDefinitions} = ns_config:search(Config, roles_definitions),
     case cluster_compat_mode:is_cluster_spock(Config) of
         true ->
-            RolesDefinitions;
+            roles_spock();
         false ->
-            case RolesDefinitions of
-                undefined ->
-                    %% can happen briefly after node joins the cluster
-                    undefined;
-                _ ->
-                    upgrade_roles_spock(RolesDefinitions)
-            end
+            roles_45()
+    end.
+
+get_definitions_filtered_for_rest_api(Config) ->
+    case cluster_compat_mode:is_enterprise() of
+        true ->
+            get_definitions(Config);
+        false ->
+            [Role ||
+                {_, _, Props, _} = Role <- get_definitions(Config),
+                proplists:get_value(ce, Props, false)]
     end.
 
 -spec object_match(rbac_permission_object(), rbac_permission_pattern_object()) ->
@@ -346,13 +394,7 @@ get_roles({_, saslauthd} = Identity) ->
 
 -spec get_compiled_roles(rbac_identity()) -> [rbac_compiled_role()].
 get_compiled_roles(Identity) ->
-    Definitions =
-        case cluster_compat_mode:is_cluster_45() of
-            true ->
-                get_definitions(ns_config:latest());
-            false ->
-                preconfigured_roles()
-        end,
+    Definitions = get_definitions(),
     compile_roles(get_roles(Identity), Definitions).
 
 -spec get_possible_param_values(ns_config(), atom()) -> [rbac_role_param()].
@@ -364,7 +406,7 @@ get_all_assignable_roles(Config) ->
     BucketNames = get_possible_param_values(Config, bucket_name),
 
     lists:foldr(
-      fun ({bucket_sasl, _, _, _}, Acc) ->
+      fun ({_, _, [], _}, Acc) ->
               Acc;
           ({Role, [], Props, _}, Acc) ->
               [{Role, Props} | Acc];
@@ -373,7 +415,7 @@ get_all_assignable_roles(Config) ->
                 fun (BucketName, Acc1) ->
                         [{{Role, [BucketName]}, Props} | Acc1]
                 end, Acc, BucketNames)
-      end, [], get_definitions(Config)).
+      end, [], get_definitions_filtered_for_rest_api(Config)).
 
 -spec validate_role(rbac_role(), [rbac_role_def()], ns_config()) -> boolean().
 validate_role(Role, Definitions, Config) when is_atom(Role) ->
@@ -392,7 +434,7 @@ validate_role(Role, Params, Definitions, Config) ->
     end.
 
 validate_roles(Roles, Config) ->
-    {value, Definitions} = ns_config:search(roles_definitions),
+    Definitions = get_definitions_filtered_for_rest_api(Config),
     UnknownRoles = [Role || Role <- Roles,
                             not validate_role(Role, Definitions, Config)],
     case UnknownRoles of
@@ -420,12 +462,12 @@ compile_roles_test() ->
                                [{test_role, [param], [], [{[{bucket, param}], none}]}])).
 
 admin_test() ->
-    Roles = compile_roles([admin], preconfigured_roles()),
+    Roles = compile_roles([admin], roles_45()),
     ?assertEqual(true, is_allowed({[buckets], create}, Roles)),
     ?assertEqual(true, is_allowed({[something, something], anything}, Roles)).
 
 ro_admin_test() ->
-    Roles = compile_roles([ro_admin], preconfigured_roles()),
+    Roles = compile_roles([ro_admin], roles_45()),
     ?assertEqual(false, is_allowed({[{bucket, "test"}, password], read}, Roles)),
     ?assertEqual(false, is_allowed({[{bucket, "test"}, data], read}, Roles)),
     ?assertEqual(true, is_allowed({[{bucket, "test"}, something], read}, Roles)),
@@ -459,13 +501,13 @@ bucket_admin_check_default(Roles) ->
     ?assertEqual(true, is_allowed({[{bucket, "default"}, anything], anything}, Roles)).
 
 bucket_admin_test() ->
-    Roles = compile_roles([{bucket_admin, ["default"]}], preconfigured_roles()),
+    Roles = compile_roles([{bucket_admin, ["default"]}], roles_45()),
     bucket_admin_check_default(Roles),
     bucket_views_admin_check_another(Roles),
     bucket_views_admin_check_global(Roles).
 
 bucket_admin_wildcard_test() ->
-    Roles = compile_roles([{bucket_admin, [any]}], preconfigured_roles()),
+    Roles = compile_roles([{bucket_admin, [any]}], roles_45()),
     bucket_admin_check_default(Roles),
     bucket_views_admin_check_global(Roles).
 
@@ -478,13 +520,13 @@ views_admin_check_default(Roles) ->
     ?assertEqual(false, is_allowed({[{bucket, "default"}], read}, Roles)).
 
 views_admin_test() ->
-    Roles = compile_roles([{views_admin, ["default"]}], preconfigured_roles()),
+    Roles = compile_roles([{views_admin, ["default"]}], roles_45()),
     views_admin_check_default(Roles),
     bucket_views_admin_check_another(Roles),
     bucket_views_admin_check_global(Roles).
 
 views_admin_wildcard_test() ->
-    Roles = compile_roles([{views_admin, [any]}], preconfigured_roles()),
+    Roles = compile_roles([{views_admin, [any]}], roles_45()),
     views_admin_check_default(Roles),
     bucket_views_admin_check_global(Roles).
 
@@ -495,14 +537,14 @@ bucket_sasl_check(Roles, Bucket, Allowed) ->
     ?assertEqual(false, is_allowed({[{bucket, Bucket}], write}, Roles)).
 
 bucket_sasl_test() ->
-    Roles = compile_roles([{bucket_sasl, ["default"]}], preconfigured_roles()),
+    Roles = compile_roles([{bucket_sasl, ["default"]}], roles_45()),
     bucket_sasl_check(Roles, "default", true),
     bucket_sasl_check(Roles, "another", false),
     ?assertEqual(true, is_allowed({[pools], read}, Roles)),
     ?assertEqual(false, is_allowed({[another], read}, Roles)).
 
 replication_admin_test() ->
-    Roles = compile_roles([replication_admin], preconfigured_roles()),
+    Roles = compile_roles([replication_admin], roles_45()),
     ?assertEqual(true, is_allowed({[{bucket, "default"}, xdcr], anything}, Roles)),
     ?assertEqual(false, is_allowed({[{bucket, "default"}, password], read}, Roles)),
     ?assertEqual(false, is_allowed({[{bucket, "default"}, views], read}, Roles)),
@@ -516,7 +558,7 @@ replication_admin_test() ->
 
 validate_role_test() ->
     Config = [[{buckets, [{configs, [{"test", []}]}]}]],
-    Definitions = preconfigured_roles(),
+    Definitions = roles_45(),
     ?assertEqual(true, validate_role(admin, Definitions, Config)),
     ?assertEqual(true, validate_role({bucket_admin, ["test"]}, Definitions, Config)),
     ?assertEqual(true, validate_role({views_admin, [any]}, Definitions, Config)),

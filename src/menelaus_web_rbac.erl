@@ -32,6 +32,7 @@
          handle_put_user/3,
          handle_delete_user/3,
          handle_change_password/1,
+         handle_validate_password/1,
          handle_settings_read_only_admin_name/1,
          handle_settings_read_only_user_post/1,
          handle_read_only_user_delete/1,
@@ -42,7 +43,9 @@
          handle_check_permission_for_cbauth/1,
          forbidden_response/1,
          role_to_string/1,
-         validate_cred/2]).
+         validate_cred/2,
+         handle_get_password_policy/1,
+         handle_post_password_policy/1]).
 
 assert_is_ldap_enabled() ->
     case cluster_compat_mode:is_ldap_enabled() of
@@ -180,10 +183,17 @@ filter_roles(Config, RawPermission, Roles) ->
               end, Roles)
     end.
 
+assert_api_can_be_used() ->
+    menelaus_web:assert_is_45(),
+    case cluster_compat_mode:is_cluster_spock() of
+        true ->
+            ok;
+        false ->
+            menelaus_web:assert_is_enterprise()
+    end.
 
 handle_get_roles(Req) ->
-    menelaus_web:assert_is_enterprise(),
-    menelaus_web:assert_is_45(),
+    assert_api_can_be_used(),
 
     Params = Req:parse_qs(),
     Permission = proplists:get_value("permission", Params, undefined),
@@ -210,8 +220,7 @@ get_user_json({Id, Type}, Name, Roles) ->
      end}.
 
 handle_get_users(Req) ->
-    menelaus_web:assert_is_enterprise(),
-    menelaus_web:assert_is_45(),
+    assert_api_can_be_used(),
 
     case cluster_compat_mode:is_cluster_spock() of
         true ->
@@ -314,15 +323,80 @@ type_to_atom("saslauthd") ->
 type_to_atom(_) ->
     unknown.
 
+verify_length([P, Len]) ->
+    length(P) >= Len.
+
+verify_control_chars(P) ->
+    lists:all(
+      fun (C) ->
+              C > 31 andalso C =/= 127
+      end, P).
+
+verify_utf8(P) ->
+    couch_util:validate_utf8(P).
+
+verify_lowercase(P) ->
+    string:to_upper(P) =/= P.
+
+verify_uppercase(P) ->
+    string:to_lower(P) =/= P.
+
+verify_digits(P) ->
+    lists:any(
+      fun (C) ->
+              C > 47 andalso C < 58
+      end, P).
+
+password_special_characters() ->
+    "@%+\\/'\"!#$^?:,(){}[]~`-_".
+
+verify_special(P) ->
+    lists:any(
+      fun (C) ->
+              lists:member(C, "@%+\\/'\"!#$^?:,(){}[]~`-_")
+      end, P).
+
+get_verifier(uppercase, P) ->
+    {fun verify_uppercase/1, P, <<"The password must contain at least one uppercase letter">>};
+get_verifier(lowercase, P) ->
+    {fun verify_lowercase/1, P, <<"The password must contain at least one lowercase letter">>};
+get_verifier(digits, P) ->
+    {fun verify_digits/1, P, <<"The password must contain at least one digit">>};
+get_verifier(special, P) ->
+    {fun verify_special/1, P,
+     list_to_binary("The password must contain at least one of the following characters: " ++
+                        password_special_characters())}.
+
+execute_verifiers([]) ->
+    true;
+execute_verifiers([{Fun, Arg, Error} | Rest]) ->
+    case Fun(Arg) of
+        true ->
+            execute_verifiers(Rest);
+        false ->
+            Error
+    end.
+
+get_password_policy() ->
+    {value, Policy} = ns_config:search(password_policy),
+    MinLength = proplists:get_value(min_length, Policy),
+    true = MinLength =/= undefined,
+    MustPresent = proplists:get_value(must_present, Policy),
+    true = MustPresent =/= undefined,
+    {MinLength, MustPresent}.
+
 validate_cred(undefined, _) -> <<"Field must be given">>;
-validate_cred(P, password) when length(P) < 6 -> <<"The password must be at least six characters.">>;
 validate_cred(P, password) ->
-    V = lists:all(
-          fun (C) ->
-                  C > 31 andalso C =/= 127
-          end, P)
-        andalso couch_util:validate_utf8(P),
-    V orelse <<"The password must not contain control characters and be valid utf8">>;
+    {MinLength, MustPresent} = get_password_policy(),
+    LengthError = io_lib:format("The password must be at least ~p characters long.", [MinLength]),
+
+    Verifiers =
+        [{fun verify_length/1, [P, MinLength], list_to_binary(LengthError)},
+         {fun verify_utf8/1, P, <<"The password must be valid utf8">>},
+         {fun verify_control_chars/1, P, <<"The password must not contain control characters">>}] ++
+        [get_verifier(V, P) || V <- MustPresent],
+
+    execute_verifiers(Verifiers);
 validate_cred([], username) ->
     <<"Username must not be empty">>;
 validate_cred(Username, username) ->
@@ -337,13 +411,13 @@ validate_cred(Username, username) ->
         <<"The username must not contain spaces, control or any of ()<>@,;:\\\"/[]?={} characters and must be valid utf8">>.
 
 handle_put_user(Type, UserId, Req) ->
-    menelaus_web:assert_is_enterprise(),
-    menelaus_web:assert_is_45(),
+    assert_api_can_be_used(),
 
     case type_to_atom(Type) of
         unknown ->
             menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
         saslauthd = T ->
+            menelaus_web:assert_is_enterprise(),
             handle_put_user_with_identity({UserId, T}, Req);
         builtin = T ->
             menelaus_web:assert_is_spock(),
@@ -399,6 +473,9 @@ handle_put_user_validated(Identity, Name, Password, RawRoles, Req) ->
                     reply_bad_roles(Req, [role_to_string(UR) || UR <- UnknownRoles]);
                 {abort, password_required} ->
                     menelaus_util:reply_error(Req, "password", "Password is required for new user.");
+                {abort, too_many} ->
+                    menelaus_util:reply_error(
+                      Req, "_", "You cannot create any more users on Community Edition.");
                 retry_needed ->
                     erlang:error(exceeded_retries)
             end;
@@ -483,6 +560,12 @@ do_change_password({_, builtin} = Identity, Password) ->
     menelaus_users:change_password(Identity, Password);
 do_change_password({User, admin}, Password) ->
     ns_config_auth:set_credentials(admin, User, Password).
+
+handle_validate_password(Req) ->
+    menelaus_util:execute_if_validated(
+      fun (_Values) ->
+              menelaus_util:reply(Req, 200)
+      end, Req, validate_change_password(Req:parse_post())).
 
 handle_settings_read_only_admin_name(Req) ->
     case ns_config_auth:get_user(ro_admin) of
@@ -693,7 +776,7 @@ handle_check_permissions_post(Req) ->
     end.
 
 check_permissions_url_version(Config) ->
-    erlang:phash2([menelaus_roles:get_definitions(Config),
+    erlang:phash2([cluster_compat_mode:get_compat_version(Config),
                    menelaus_users:get_users_version(),
                    ns_bucket:get_bucket_names(ns_bucket:get_buckets(Config)),
                    ns_config_auth:get_no_auth_buckets(Config)]).
@@ -754,3 +837,46 @@ forbidden_response(Permissions) when is_list(Permissions) ->
       {permissions, format_permissions(Permissions)}]};
 forbidden_response(Permission) ->
     forbidden_response([Permission]).
+
+handle_get_password_policy(Req) ->
+    menelaus_web:assert_is_spock(),
+    {MinLength, MustPresent} = get_password_policy(),
+    menelaus_util:reply_json(Req,
+                             {[{minLength, MinLength},
+                               {enforceUppercase, lists:member(uppercase, MustPresent)},
+                               {enforceLowercase, lists:member(lowercase, MustPresent)},
+                               {enforceDigits, lists:member(digits, MustPresent)},
+                               {enforceSpecialChars, lists:member(special, MustPresent)}]}).
+
+validate_post_password_policy(Args) ->
+    R0 = menelaus_util:validate_has_params({Args, [], []}),
+    R1 = menelaus_util:validate_required(minLength, R0),
+    R2 = menelaus_util:validate_integer(minLength, R1),
+    R3 = menelaus_util:validate_range(minLength, 0, 100, R2),
+    R4 = menelaus_util:validate_boolean(enforceUppercase, R3),
+    R5 = menelaus_util:validate_boolean(enforceLowercase, R4),
+    R6 = menelaus_util:validate_boolean(enforceDigits, R5),
+    R7 = menelaus_util:validate_boolean(enforceSpecialChars, R6),
+    menelaus_util:validate_unsupported_params(R7).
+
+must_present_value(JsonField, MustPresentAtom, Args) ->
+    case proplists:get_value(JsonField, Args) of
+        true ->
+            [MustPresentAtom];
+        _ ->
+            []
+    end.
+
+handle_post_password_policy(Req) ->
+    menelaus_util:execute_if_validated(
+      fun (Values) ->
+              Policy = [{min_length, proplists:get_value(minLength, Values)},
+                        {must_present,
+                         must_present_value(enforceUppercase, uppercase, Values) ++
+                             must_present_value(enforceLowercase, lowercase, Values) ++
+                             must_present_value(enforceDigits, digits, Values) ++
+                             must_present_value(enforceSpecialChars, special, Values)}],
+              ns_config:set(password_policy, Policy),
+              ns_audit:password_policy(Req, Policy),
+              menelaus_util:reply(Req, 200)
+      end, Req, validate_post_password_policy(Req:parse_post())).
