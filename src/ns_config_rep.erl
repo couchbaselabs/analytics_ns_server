@@ -46,7 +46,7 @@
 % API
 -export([ensure_config_pushed/0,
          ensure_config_seen_by_nodes/0, ensure_config_seen_by_nodes/1,
-         pull_and_push/1]).
+         pull_and_push/1, pull_from_one_node_directly/1]).
 
 -export([get_remote/2, pull_remotes/1]).
 
@@ -343,16 +343,27 @@ do_push(RawKVList, OtherNodes) ->
 pull_random_node()  -> pull_random_node(5).
 pull_random_node(N) -> pull_one_node(misc:shuffle(ns_node_disco:nodes_actual_other()), N).
 
-pull_one_node([], _N)    -> ok;
-pull_one_node(_Nodes, 0) -> error;
-pull_one_node([Node | Rest], N) ->
+pull_one_node(Nodes, Tries) ->
+    pull_one_node(Nodes, Tries, []).
+
+pull_one_node([], _N, Errors) ->
+    {error, Errors};
+pull_one_node(_Nodes, 0, Errors) ->
+    {error, Errors};
+pull_one_node([Node | Rest], N, Errors) ->
     ?log_info("Pulling config from: ~p", [Node]),
     case (catch get_remote(Node, ?PULL_TIMEOUT)) of
-        {'EXIT', _, _} -> pull_one_node(Rest, N - 1);
-        {'EXIT', _}    -> pull_one_node(Rest, N - 1);
-        RemoteKVList   -> merge_one_remote_config(RemoteKVList),
-                          ok
+        {'EXIT', _, _} = E ->
+            pull_one_node(Rest, N - 1, [{Node, E} | Errors]);
+        {'EXIT', _} = E ->
+            pull_one_node(Rest, N - 1, [{Node, E} | Errors]);
+        RemoteKVList ->
+            merge_one_remote_config(RemoteKVList),
+            ok
     end.
+
+pull_from_one_node_directly(Node) ->
+    pull_one_node([Node], 1).
 
 pull_from_all_nodes(Nodes) ->
     {Good, Bad} = ns_config_replica:get_compressed_many(Nodes, ?PULL_TIMEOUT),
