@@ -395,6 +395,9 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                 ["settings", "rbac", "users"] ->
                     {{[admin, security], read},
                      fun menelaus_web_rbac:handle_get_users/1};
+                ["settings", "rbac", "users", Type] ->
+                    {{[admin, security], read},
+                     fun menelaus_web_rbac:handle_get_users/2, [Type]};
                 ["settings", "passwordPolicy"] ->
                     {{[admin, security], read},
                      fun menelaus_web_rbac:handle_get_password_policy/1};
@@ -759,7 +762,7 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                      fun menelaus_web_mcd_settings:handle_node_setting_delete/3, [Node, Name]};
                 ["settings", "rbac", "users", UserId] ->
                     {{[admin, security], write},
-                     fun menelaus_web_rbac:handle_delete_user/3, ["saslauthd", UserId]};
+                     fun menelaus_web_rbac:handle_delete_user/3, ["external", UserId]};
                 ["settings", "rbac", "users", Type, UserId] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_delete_user/3, [Type, UserId]};
@@ -796,7 +799,7 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                      fun menelaus_web_groups:handle_server_group_update/2, [GroupUUID]};
                 ["settings", "rbac", "users", UserId] ->
                     {{[admin, security], write},
-                     fun menelaus_web_rbac:handle_put_user/3, ["saslauthd", UserId]};
+                     fun menelaus_web_rbac:handle_put_user/3, ["external", UserId]};
                 ["settings", "rbac", "users", Type, UserId] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_put_user/3, [Type, UserId]};
