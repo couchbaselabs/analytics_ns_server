@@ -25,7 +25,7 @@
 
 -export([init/0, handle_call/4, handle_cast/3, handle_info/3]).
 
--define(NS_MEMCACHED_TIMEOUT, 1000).
+-define(NS_MEMCACHED_TIMEOUT, 500).
 
 start_link() ->
     health_monitor:start_link(?MODULE).
@@ -73,9 +73,9 @@ analyze_status(Node, AllNodes) ->
     end.
 
 is_node_down(needs_attention) ->
-    {true, {"None of the buckets are ready. Either buckets have not warmed up or potential issue with the data service.", no_buckets_ready}};
+    {true, {"The data service did not respond for the duration of the auto-failover threshold. Either none of the buckets have warmed up or there is an issue with the data service.", no_buckets_ready}};
 is_node_down({not_ready, Buckets}) ->
-    {true, {"Data service is operational but following buckets are not ready: " ++ string:join(Buckets, ", ") ++ ".", some_buckets_not_ready}}.
+    {true, {"The data service is online but the following buckets' data are not accessible: " ++ string:join(Buckets, ", ") ++ ".", some_buckets_not_ready}}.
 
 %% Internal functions
 get_not_ready_buckets(_, _, []) ->
@@ -173,7 +173,11 @@ local_node_status(Buckets) ->
     end.
 
 get_buckets(Buckets) ->
-    ReadyBuckets = ns_memcached:warmed_buckets(?NS_MEMCACHED_TIMEOUT),
+    ReadyBuckets = try ns_memcached:warmed_buckets(?NS_MEMCACHED_TIMEOUT)
+                   catch exit:{timeout, _} ->
+                           ?log_warning("ns_memcached:warmed_buckets timed out while trying to get buckets: ~p", [Buckets]),
+                           []
+                   end,
     lists:map(
       fun (Bucket) ->
               State = case lists:member(Bucket, ReadyBuckets) of
