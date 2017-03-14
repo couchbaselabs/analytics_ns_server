@@ -33,7 +33,6 @@
          handle_put_user/3,
          handle_delete_user/3,
          handle_change_password/1,
-         handle_validate_password/1,
          handle_settings_read_only_admin_name/1,
          handle_settings_read_only_user_post/1,
          handle_read_only_user_delete/1,
@@ -500,15 +499,20 @@ validate_cred(Username, username) ->
 handle_put_user(Type, UserId, Req) ->
     assert_api_can_be_used(),
 
-    case type_to_atom(Type) of
-        unknown ->
-            menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
-        saslauthd = T ->
-            menelaus_web:assert_is_enterprise(),
-            handle_put_user_with_identity({UserId, T}, Req);
-        builtin = T ->
-            menelaus_web:assert_is_spock(),
-            handle_put_user_with_identity({UserId, T}, Req)
+    case validate_cred(UserId, username) of
+        true ->
+            case type_to_atom(Type) of
+                unknown ->
+                    menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
+                saslauthd = T ->
+                    menelaus_web:assert_is_enterprise(),
+                    handle_put_user_with_identity({UserId, T}, Req);
+                builtin = T ->
+                    menelaus_web:assert_is_spock(),
+                    handle_put_user_with_identity({UserId, T}, Req)
+            end;
+        Error ->
+            menelaus_util:reply_global_error(Req, Error)
     end.
 
 validate_password(R1) ->
@@ -647,12 +651,6 @@ do_change_password({_, builtin} = Identity, Password) ->
     menelaus_users:change_password(Identity, Password);
 do_change_password({User, admin}, Password) ->
     ns_config_auth:set_credentials(admin, User, Password).
-
-handle_validate_password(Req) ->
-    menelaus_util:execute_if_validated(
-      fun (_Values) ->
-              menelaus_util:reply(Req, 200)
-      end, Req, validate_change_password(Req:parse_post())).
 
 handle_settings_read_only_admin_name(Req) ->
     case ns_config_auth:get_user(ro_admin) of

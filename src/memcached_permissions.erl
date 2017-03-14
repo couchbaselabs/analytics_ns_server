@@ -31,7 +31,8 @@
 
 -record(state, {buckets,
                 roles,
-                admin_user}).
+                users,
+                cluster_admin}).
 
 bucket_permissions_to_check(Bucket) ->
     [{{[{bucket, Bucket}, data, docs], read},  'Read'},
@@ -39,11 +40,10 @@ bucket_permissions_to_check(Bucket) ->
      {{[{bucket, Bucket}, stats], read},       'SimpleStats'},
      {{[{bucket, Bucket}, data, dcp], read},   'DcpConsumer'},
      {{[{bucket, Bucket}, data, dcp], write},  'DcpProducer'},
-     {{[{bucket, Bucket}, data, tap], read},   'TapConsumer'},
-     {{[{bucket, Bucket}, data, tap], write},  'TapProducer'},
+     {{[{bucket, Bucket}, data, tap], read},   'Tap'},
+     {{[{bucket, Bucket}, data, tap], write},  'Tap'},
      {{[{bucket, Bucket}, data, meta], read},  'MetaRead'},
      {{[{bucket, Bucket}, data, meta], write}, 'MetaWrite'},
-     {{[{bucket, Bucket}, data, idle], read},  'IdleConnection'},
      {{[{bucket, Bucket}, data, xattr], read}, 'XattrRead'},
      {{[{bucket, Bucket}, data, xattr], write},'XattrWrite'}].
 
@@ -52,6 +52,7 @@ global_permissions_to_check() ->
      {{[buckets], create},                  'BucketManagement'},
      {{[admin, memcached, node], write},    'NodeManagement'},
      {{[admin, memcached, session], write}, 'SessionManagement'},
+     {{[admin, memcached, idle], write},    'IdleConnection'},
      {{[admin, security, audit], write},    'AuditManagement'}].
 
 start_link() ->
@@ -64,7 +65,8 @@ sync() ->
 init() ->
     Config = ns_config:get(),
     #state{buckets = ns_bucket:get_bucket_names(ns_bucket:get_buckets(Config)),
-           admin_user = ns_config:search_node_prop(Config, memcached, admin_user),
+           users = [ns_config:search_node_prop(Config, memcached, admin_user) |
+                    ns_config:search_node_prop(Config, memcached, other_users, [])],
            roles = menelaus_roles:get_definitions(Config)}.
 
 filter_event({buckets, _V}) ->
@@ -72,6 +74,8 @@ filter_event({buckets, _V}) ->
 filter_event({cluster_compat_version, _V}) ->
     true;
 filter_event({user_version, _V}) ->
+    true;
+filter_event({rest_creds, _V}) ->
     true;
 filter_event(_) ->
     false.
@@ -92,7 +96,15 @@ handle_event({cluster_compat_version, _V}, #state{roles = Roles} = State) ->
             unchanged;
         NewRoles ->
             {changed, State#state{roles = NewRoles}}
-    end.
+    end;
+handle_event({rest_creds, {ClusterAdmin, _}}, #state{cluster_admin = ClusterAdmin}) ->
+    unchanged;
+handle_event({rest_creds, {ClusterAdmin, _}}, State) ->
+    {changed, State#state{cluster_admin = ClusterAdmin}};
+handle_event({rest_creds, _}, #state{cluster_admin = undefined}) ->
+    unchanged;
+handle_event({rest_creds, _}, State) ->
+    {changed, State#state{cluster_admin = undefined}}.
 
 producer(State) ->
     case cluster_compat_mode:is_cluster_spock() of
@@ -104,9 +116,10 @@ producer(State) ->
 
 generate_45(#state{buckets = Buckets,
                    roles = RoleDefinitions,
-                   admin_user = Admin}) ->
+                   users = Users}) ->
     Json =
-        {[memcached_admin_json(Admin, Buckets) | generate_json_45(Buckets, RoleDefinitions)]},
+        {[memcached_admin_json(U, Buckets) || U <-Users] ++
+             generate_json_45(Buckets, RoleDefinitions)},
     menelaus_util:encode_json(Json).
 
 refresh() ->
@@ -172,40 +185,61 @@ generate_json_45(Buckets, RoleDefinitions) ->
                     end, {[], RolesDict}, Buckets),
     lists:reverse(Json).
 
-jsonify_users(AU, Buckets, RoleDefinitions) ->
+jsonify_users(Users, Buckets, RoleDefinitions, ClusterAdmin) ->
     ?make_transducer(
        begin
            ?yield(object_start),
-           ?yield({kv, memcached_admin_json(AU, Buckets)}),
+           lists:foreach(fun (U) ->
+                                 ?yield({kv, memcached_admin_json(U, Buckets)})
+                         end, Users),
 
-           %% TODO: to be removed after buckets will be upgraded to builtin users
+           EmitUser =
+               fun (Identity, Roles, Dict) ->
+                       {Permissions, NewDict} =
+                           permissions_for_user(Roles, Buckets, RoleDefinitions, Dict),
+                       ?yield({kv, jsonify_user(Identity, Permissions)}),
+                       NewDict
+               end,
+
            Dict1 =
+               case ClusterAdmin of
+                   undefined ->
+                       dict:new();
+                   _ ->
+                       Roles1 = menelaus_roles:get_roles({ClusterAdmin, admin}),
+                       EmitUser({ClusterAdmin, builtin}, Roles1, dict:new())
+               end,
+
+           Dict2 =
                lists:foldl(
                  fun (Bucket, Dict) ->
-                         Roles = menelaus_roles:get_roles({Bucket, bucket}),
-                         {Permissions, NewDict} =
-                             permissions_for_user(Roles, Buckets, RoleDefinitions, Dict),
-                         ?yield({kv, jsonify_user({Bucket, builtin}, Permissions)}),
-                         NewDict
-                 end, dict:new(), Buckets),
+                         LegacyName = Bucket ++ ";legacy",
+                         Roles2 = menelaus_roles:get_roles({Bucket, bucket}),
+                         EmitUser({LegacyName, builtin}, Roles2, Dict)
+                 end, Dict1, Buckets),
 
            pipes:fold(
              ?producer(),
-             fun ({{user, Identity}, Props}, Dict) ->
-                     Roles = proplists:get_value(roles, Props, []),
-                     {Permissions, NewDict} =
-                         permissions_for_user(Roles, Buckets, RoleDefinitions, Dict),
-                     ?yield({kv, jsonify_user(Identity, Permissions)}),
-                     NewDict
-             end, Dict1),
+             fun ({{user, {UserName, _} = Identity}, Props}, Dict) ->
+                     case UserName of
+                         ClusterAdmin ->
+                             ?log_warning("Encountered user ~p with the same name as cluster administrator",
+                                          [ClusterAdmin]),
+                             Dict;
+                         _ ->
+                             Roles3 = proplists:get_value(roles, Props, []),
+                             EmitUser(Identity, Roles3, Dict)
+                     end
+             end, Dict2),
            ?yield(object_end)
        end).
 
 make_producer(#state{buckets = Buckets,
                      roles = RoleDefinitions,
-                     admin_user = Admin}) ->
+                     users = Users,
+                     cluster_admin = ClusterAdmin}) ->
     pipes:compose([menelaus_users:select_users('_'),
-                   jsonify_users(Admin, Buckets, RoleDefinitions),
+                   jsonify_users(Users, Buckets, RoleDefinitions, ClusterAdmin),
                    sjson:encode_extended_json([{compact, false},
                                                {strict, false}])]).
 
