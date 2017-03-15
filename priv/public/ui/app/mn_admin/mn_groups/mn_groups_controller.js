@@ -25,7 +25,6 @@
       vm.applyChanges = applyChanges;
       vm.reloadState = mnHelper.reloadState;
       vm.changeNodeGroup = changeNodeGroup;
-      vm.groupsModel = {};
       vm.disableApplyChangesBtn = true;
 
       activate();
@@ -33,7 +32,7 @@
       function applyChanges() {
         mnPromiseHelper($scope, mnGroupsService.applyChanges(vm.state.uri, vm.state.currentGroups))
           .reloadState("app.admin.servers.list.groups")
-          .showGlobalSuccess("Group changes saved successfully!", 4000)
+          .showGlobalSuccess("Group changes applied successfully!", 4000)
           .getPromise()
           .then(null, function (resp) {
             if (resp.status === 409) {
@@ -76,12 +75,16 @@
         });
       }
 
-      function changeNodeGroup(server, currentGroupName) {
+      function changeNodeGroup(groupOld, groupNew, server) {
+        if (groupOld === groupNew || groupNew === server.toGroupPending) {
+          return;
+        }
         var fromGroup = _.find(vm.state.currentGroups, function (cGroup) {
-          return cGroup.name === currentGroupName;
+          return cGroup.name === groupOld;
         });
+
         var toGroup = _.find(vm.state.currentGroups, function (cGroup) {
-          return cGroup.name === vm.groupsModel[server.hostname].name;
+          return cGroup.name === groupNew;
         });
 
         _.remove(fromGroup.nodes, function (node) {
@@ -89,6 +92,12 @@
         });
 
         toGroup.nodes.push(server);
+
+        if (server.toGroupPending === groupOld) {
+          delete server.toGroupPending;
+        } else {
+          server.toGroupPending = toGroup.name
+        }
 
         vm.disableApplyChangesBtn = false;
       }
