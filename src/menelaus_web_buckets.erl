@@ -82,7 +82,12 @@ checking_bucket_uuid(Req, BucketConfig, Body) ->
     end.
 
 may_expose_bucket_auth(Name, Req) ->
-    menelaus_auth:has_permission({[{bucket, Name}, password], read}, Req).
+    case menelaus_auth:get_token(Req) of
+        undefined ->
+            menelaus_auth:has_permission({[{bucket, Name}, password], read}, Req);
+        _ ->
+            false
+    end.
 
 handle_bucket_list(Req) ->
     BucketNamesUnsorted =
@@ -313,13 +318,18 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
                 []
         end,
 
+    Suffix5 = case MayExposeAuth of
+                  true ->
+                      [{saslPassword,
+                       list_to_binary(proplists:get_value(sasl_password, BucketConfig, ""))} |
+                       Suffix4];
+                  false ->
+                      Suffix4
+              end,
+
     {struct, [{name, list_to_binary(Id)},
               {bucketType, external_bucket_type(BucketType, BucketConfig)},
               {authType, misc:expect_prop_value(auth_type, BucketConfig)},
-              {saslPassword, case MayExposeAuth of
-                                 true -> list_to_binary(proplists:get_value(sasl_password, BucketConfig, ""));
-                                 _ -> <<"">>
-                             end},
               {proxyPort, proplists:get_value(moxi_port, BucketConfig, 0)},
               {uri, BuildUUIDURI(["pools", "default", "buckets", Id])},
               {streamingUri, BuildUUIDURI(["pools", "default", "bucketsStreaming", Id])},
@@ -341,7 +351,7 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
                                 {directoryURI, StatsDirectoryUri},
                                 {nodeStatsListURI, NodeStatsListURI}]}},
               {nodeLocator, ns_bucket:node_locator(BucketConfig)}
-              | Suffix4]}.
+              | Suffix5]}.
 
 build_bucket_capabilities(BucketConfig) ->
     MaybeXattr = case cluster_compat_mode:is_cluster_spock() of
@@ -482,7 +492,8 @@ extract_bucket_props(BucketId, Props) ->
           bucket_name,
           bucket_config,
           all_buckets,
-          cluster_storage_totals}).
+          cluster_storage_totals,
+          cluster_version}).
 
 init_bucket_validation_context(IsNew, BucketName, Req) ->
     ValidateOnly = (proplists:get_value("just_validate", Req:parse_qs()) =:= "1"),
@@ -492,9 +503,10 @@ init_bucket_validation_context(IsNew, BucketName, Req) ->
 init_bucket_validation_context(IsNew, BucketName, ValidateOnly, IgnoreWarnings) ->
     init_bucket_validation_context(IsNew, BucketName,
                                    ns_bucket:get_buckets(), extended_cluster_storage_info(),
-                                   ValidateOnly, IgnoreWarnings).
+                                   ValidateOnly, IgnoreWarnings, cluster_compat_mode:get_compat_version()).
 
-init_bucket_validation_context(IsNew, BucketName, AllBuckets, ClusterStorageTotals, ValidateOnly, IgnoreWarnings) ->
+init_bucket_validation_context(IsNew, BucketName, AllBuckets, ClusterStorageTotals,
+                               ValidateOnly, IgnoreWarnings, ClusterVersion) ->
     {BucketConfig, ExtendedTotals} =
         case lists:keyfind(BucketName, 1, AllBuckets) of
             false -> {false, ClusterStorageTotals};
@@ -514,7 +526,8 @@ init_bucket_validation_context(IsNew, BucketName, AllBuckets, ClusterStorageTota
        bucket_name = BucketName,
        all_buckets = AllBuckets,
        bucket_config = BucketConfig,
-       cluster_storage_totals = ExtendedTotals
+       cluster_storage_totals = ExtendedTotals,
+       cluster_version = ClusterVersion
       }.
 
 handle_bucket_update(_PoolId, BucketId, Req) ->
@@ -805,28 +818,31 @@ parse_bucket_params_without_warnings(Ctx, Params) ->
             {errors, TotalErrors, JSONSummaries, OKs}
     end.
 
-basic_bucket_params_screening(Ctx, Params) ->
-    BucketConfig = Ctx#bv_ctx.bucket_config,
+basic_bucket_params_screening(#bv_ctx{bucket_config = false, new = false}, _Params) ->
+    {[], [{name, <<"Bucket with given name doesn't exist">>}]};
+basic_bucket_params_screening(#bv_ctx{bucket_config = BucketConfig} = Ctx, Params) ->
     AuthType = case proplists:get_value("authType", Params) of
-                   "none" -> none;
-                   "sasl" -> sasl;
+                   "none" ->
+                       none;
+                   "sasl" ->
+                       sasl;
                    undefined when BucketConfig =/= false ->
                        ns_bucket:auth_type(BucketConfig);
-                   _ -> {crap, <<"invalid authType">>} % this is not for end users
+                   _ ->
+                       invalid
                end,
-    case {Ctx#bv_ctx.new, BucketConfig, AuthType} of
-        {false, false, _} ->
-            {[], [{name, <<"Bucket with given name doesn't exist">>}]};
-        {_, _, {crap, Crap}} ->
-            {[], [{authType, Crap}]};
-        _ -> basic_bucket_params_screening_tail(Ctx, Params, AuthType)
+    case AuthType of
+        invalid ->
+            {[], [{authType, <<"invalid authType">>}]};
+        _ ->
+            basic_bucket_params_screening_tail(
+              Ctx, lists:keystore("authType", 1, Params, {"authType", AuthType}))
     end.
 
 basic_bucket_params_screening_tail(#bv_ctx{bucket_config = BucketConfig,
-                                           new = IsNew} = Ctx,
-                                   Params, AuthType) ->
+                                           new = IsNew} = Ctx, Params) ->
     BucketType = get_bucket_type(IsNew, BucketConfig, Params),
-    CommonParams = validate_common_params(Ctx, Params, AuthType),
+    CommonParams = validate_common_params(Ctx, Params),
     TypeSpecificParams =
         validate_bucket_type_specific_params(CommonParams, Params, BucketType,
                                              IsNew, BucketConfig),
@@ -837,8 +853,8 @@ basic_bucket_params_screening_tail(#bv_ctx{bucket_config = BucketConfig,
 
 validate_common_params(#bv_ctx{bucket_name = BucketName,
                                bucket_config = BucketConfig, new = IsNew,
-                               all_buckets = AllBuckets},
-                       Params, AuthType) ->
+                               all_buckets = AllBuckets}, Params) ->
+    AuthType = proplists:get_value("authType", Params),
     [{ok, name, BucketName},
      {ok, auth_type, AuthType},
      parse_validate_flush_enabled(Params, IsNew),
@@ -1408,7 +1424,8 @@ handle_cancel_view_compaction(_PoolId, Bucket, DDocId, Req) ->
 
 %% for test
 basic_bucket_params_screening(IsNew, Name, Params, AllBuckets) ->
-    Ctx = init_bucket_validation_context(IsNew, Name, AllBuckets, undefined, false, false),
+    Ctx = init_bucket_validation_context(IsNew, Name, AllBuckets, undefined,
+                                         false, false, ?VERSION_46),
     basic_bucket_params_screening(Ctx, Params).
 
 -ifdef(EUNIT).
