@@ -105,6 +105,10 @@
           "details@app.admin.buckets": {
             templateUrl: 'app/mn_admin/mn_buckets/details/mn_buckets_details.html',
             controller: 'mnBucketsDetailsController as bucketsDetailsCtl'
+          },
+          "item@app.admin.buckets": {
+            templateUrl: 'app/mn_admin/mn_buckets/list/item/mn_buckets_list_item.html',
+            controller: 'mnBucketsListItemController as bucketsItemCtl'
           }
         },
         data: {
@@ -126,11 +130,8 @@
         }
       })
       .state('app.admin.servers.list', {
-        url: '/{list:(?:active|pending)}?openedServers',
+        url: '/list?openedServers',
         params: {
-          list: {
-            value: 'active'
-          },
           openedServers: {
             array: true,
             dynamic: true
@@ -144,6 +145,10 @@
           "details@app.admin.servers.list": {
             templateUrl: 'app/mn_admin/mn_servers/details/mn_servers_list_item_details.html',
             controller: 'mnServersListItemDetailsController as serversListItemDetailsCtl'
+          },
+          "item@app.admin.servers.list": {
+            templateUrl: 'app/mn_admin/mn_servers/list/item/mn_servers_list_item.html',
+            controller: 'mnServersListItemController as serversItemCtl'
           }
         }
       })

@@ -84,7 +84,8 @@
          needs_rebalance/2,
          bucket_view_nodes/1,
          bucket_view_nodes/2,
-         bucket_config_view_nodes/1]).
+         bucket_config_view_nodes/1,
+         config_upgrade_to_spock/1]).
 
 
 %%%===================================================================
@@ -692,13 +693,27 @@ cleanup_bucket_props(Props) ->
         none -> lists:keydelete(sasl_password, 1, Props)
     end.
 
+generate_sasl_password() ->
+    binary_to_list(couch_uuids:random()).
+
+generate_sasl_password(Props) ->
+    [{auth_type, sasl} |
+     lists:keystore(sasl_password, 1, Props,
+                    {sasl_password, generate_sasl_password()})].
+
 create_bucket(BucketType, BucketName, NewConfig) ->
     case validate_bucket_config(BucketName, NewConfig) of
         ok ->
             MergedConfig0 =
                 misc:update_proplist(new_bucket_default_params(BucketType),
                                      NewConfig),
-            MergedConfig1 = cleanup_bucket_props(MergedConfig0),
+            MergedConfig1 =
+                case cluster_compat_mode:is_cluster_spock() of
+                    true ->
+                        generate_sasl_password(MergedConfig0);
+                    false ->
+                        cleanup_bucket_props(MergedConfig0)
+                end,
             BucketUUID = couch_uuids:random(),
             MergedConfig = [{repl_type, dcp} |
                             [{uuid, BucketUUID} | MergedConfig1]],
@@ -794,7 +809,12 @@ update_bucket_props(BucketName, Props) ->
                                           fun ({K, _V} = Tuple, Acc) ->
                                                   [Tuple | lists:keydelete(K, 1, Acc)]
                                           end, OldProps, Props),
-                             cleanup_bucket_props(NewProps)
+                             case cluster_compat_mode:is_cluster_spock() of
+                                 true ->
+                                     NewProps;
+                                 false ->
+                                     cleanup_bucket_props(NewProps)
+                             end
                      end),
               case RV of
                   false -> exit({not_found, BucketName});
@@ -980,6 +1000,17 @@ bucket_config_view_nodes(BucketConfig) ->
         memcached ->
             []
     end.
+
+config_upgrade_to_spock(Config) ->
+    Buckets = get_buckets(Config),
+    NewBuckets =
+        lists:map(
+          fun ({Name, Props}) ->
+                  {Name, misc:update_proplist(
+                           Props,
+                           [{auth_type, sasl}, {sasl_password, generate_sasl_password()}])}
+          end, Buckets),
+    [{set, buckets, [{configs, NewBuckets}]}].
 
 %%
 %% Internal functions

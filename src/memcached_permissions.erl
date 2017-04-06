@@ -35,17 +35,19 @@
                 cluster_admin}).
 
 bucket_permissions_to_check(Bucket) ->
-    [{{[{bucket, Bucket}, data, docs], read},  'Read'},
-     {{[{bucket, Bucket}, data, docs], write}, 'Write'},
-     {{[{bucket, Bucket}, stats], read},       'SimpleStats'},
-     {{[{bucket, Bucket}, data, dcp], read},   'DcpConsumer'},
-     {{[{bucket, Bucket}, data, dcp], write},  'DcpProducer'},
-     {{[{bucket, Bucket}, data, tap], read},   'Tap'},
-     {{[{bucket, Bucket}, data, tap], write},  'Tap'},
-     {{[{bucket, Bucket}, data, meta], read},  'MetaRead'},
-     {{[{bucket, Bucket}, data, meta], write}, 'MetaWrite'},
-     {{[{bucket, Bucket}, data, xattr], read}, 'XattrRead'},
-     {{[{bucket, Bucket}, data, xattr], write},'XattrWrite'}].
+    [{{[{bucket, Bucket}, data, docs], read},   'Read'},
+     {{[{bucket, Bucket}, data, docs], write},  'Write'},
+     {{[{bucket, Bucket}, stats], read},        'SimpleStats'},
+     {{[{bucket, Bucket}, data, dcp], read},    'DcpProducer'},
+     {{[{bucket, Bucket}, data, dcp], write},   'DcpConsumer'},
+     {{[{bucket, Bucket}, data, tap], read},    'Tap'},
+     {{[{bucket, Bucket}, data, tap], write},   'Tap'},
+     {{[{bucket, Bucket}, data, meta], read},   'MetaRead'},
+     {{[{bucket, Bucket}, data, meta], write},  'MetaWrite'},
+     {{[{bucket, Bucket}, data, xattr], read},  'XattrRead'},
+     {{[{bucket, Bucket}, data, xattr], write}, 'XattrWrite'},
+     {{[{bucket, Bucket}, data, sxattr], read}, 'SystemXattrRead'},
+     {{[{bucket, Bucket}, data, sxattr], write},'SystemXattrWrite'}].
 
 global_permissions_to_check() ->
     [{{[stats, memcached], read},           'Stats'},
@@ -210,43 +212,27 @@ jsonify_users(Users, Buckets, RoleDefinitions, ClusterAdmin) ->
                        EmitUser({ClusterAdmin, builtin}, Roles1, dict:new())
                end,
 
-           {Dict2, DefaultFound} =
-               pipes:fold(
-                 ?producer(),
-                 fun ({{user, {UserName, _} = Identity}, Props}, {Dict, DefFound}) ->
-                         {case UserName of
-                              ClusterAdmin ->
-                                  ?log_warning("Encountered user ~p with the same name as cluster administrator",
-                                               [ClusterAdmin]),
-                                  Dict;
-                              _ ->
-                                  Roles3 = proplists:get_value(roles, Props, []),
-                                  EmitUser(Identity, Roles3, Dict)
-                          end,
-                          case UserName of
-                              "default" ->
-                                  ?log_warning("Encountered user with the name 'default'"),
-                                  true;
-                              _ ->
-                                  DefFound
-                          end}
-                 end, {Dict1, false}),
+           Dict2 =
+               lists:foldl(
+                 fun (Bucket, Dict) ->
+                         LegacyName = Bucket ++ ";legacy",
+                         Roles2 = menelaus_roles:get_roles({Bucket, bucket}),
+                         EmitUser({LegacyName, builtin}, Roles2, Dict)
+                 end, Dict1, Buckets),
 
-           lists:foldl(
-             fun (Bucket, Dict) ->
-                     NewDict =
-                         case {Bucket, DefaultFound} of
-                             {"default", false} ->
-                                 Roles2 = menelaus_roles:get_roles({Bucket, bucket}),
-                                 EmitUser({Bucket, builtin}, Roles2, Dict);
-                             _ ->
-                                 Dict
-                         end,
-                     LegacyName = Bucket ++ ";legacy",
-                     Roles3 = menelaus_roles:get_roles({Bucket, bucket}),
-                     EmitUser({LegacyName, builtin}, Roles3, NewDict)
-             end, Dict2, Buckets),
-
+           pipes:fold(
+             ?producer(),
+             fun ({{user, {UserName, _} = Identity}, Props}, Dict) ->
+                     case UserName of
+                         ClusterAdmin ->
+                             ?log_warning("Encountered user ~p with the same name as cluster administrator",
+                                          [ClusterAdmin]),
+                             Dict;
+                         _ ->
+                             Roles3 = proplists:get_value(roles, Props, []),
+                             EmitUser(Identity, Roles3, Dict)
+                     end
+             end, Dict2),
            ?yield(object_end)
        end).
 
@@ -267,8 +253,8 @@ generate_json_45_test() ->
         [{<<"default">>,
           {[{buckets,{[{<<"default">>,
                         ['DcpConsumer','DcpProducer','MetaRead','MetaWrite',
-                         'Read','SimpleStats','Tap','Write','XattrRead',
-                         'XattrWrite']},
+                         'Read','SimpleStats','SystemXattrRead', 'SystemXattrWrite',
+                         'Tap','Write','XattrRead', 'XattrWrite']},
                        {<<"test">>,[]}]}},
             {privileges,[]},
             {type, builtin}]}},
@@ -276,8 +262,8 @@ generate_json_45_test() ->
           {[{buckets,{[{<<"default">>,[]},
                        {<<"test">>,
                         ['DcpConsumer','DcpProducer','MetaRead','MetaWrite',
-                         'Read','SimpleStats','Tap','Write','XattrRead',
-                         'XattrWrite']}]}},
+                         'Read','SimpleStats', 'SystemXattrRead', 'SystemXattrWrite',
+                         'Tap','Write','XattrRead', 'XattrWrite']}]}},
             {privileges,[]},
             {type, builtin}]}}],
     ?assertEqual(Json, generate_json_45(Buckets, RoleDefinitions)).

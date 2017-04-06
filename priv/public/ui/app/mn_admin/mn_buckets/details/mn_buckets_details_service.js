@@ -21,23 +21,18 @@
 
     return mnBucketsDetailsService;
 
-    function getWarmUpTasks(bucket) {
-      return $q.all([
-        mnTasksDetails.get(),
-        mnPoolDefault.get()
-      ]).then(function (resp) {
-        var tasks = resp[0];
-        var poolDefault = resp[1];
-
-        return _.filter(tasks.tasks, function (task) {
-          var isNeeded = task.type === 'warming_up' && task.status === 'running' && task.bucket === bucket.name;
-          if (isNeeded) {
-            task.hostname = _.find(poolDefault.nodes, function (node) {
-              return node.otpNode === task.node;
-            }).hostname;
-          }
-          return isNeeded;
-        });
+    function getWarmUpTasks(bucket, tasks) {
+      if (!bucket || !tasks) {
+        return;
+      }
+      return _.filter(tasks.tasksWarmingUp, function (task) {
+        var isNeeded = task.bucket === bucket.name;
+        if (isNeeded) {
+          task.hostname = _.find(bucket.nodes, function (node) {
+            return node.otpNode === task.node;
+          }).hostname;
+        }
+        return isNeeded;
       });
     }
 
@@ -62,21 +57,21 @@
       }
       var bucketRamGuageConfig = {};
       bucketRamGuageConfig.topRight = {
-        name: 'Cluster quota',
+        name: 'cluster quota',
         value: ramSummary.total
       };
       bucketRamGuageConfig.items = [{
-        name: 'Other Buckets',
+        name: 'other buckets',
         value: ramSummary.otherBuckets,
         itemStyle: {'background-color': '#00BCE9', 'z-index': '2'},
         labelStyle: {'color': '#1878a2', 'text-align': 'left'}
       }, {
-        name: 'This Bucket',
+        name: 'this bucket',
         value: ramSummary.thisAlloc,
         itemStyle: {'background-color': '#7EDB49', 'z-index': '1'},
         labelStyle: {'color': '#409f05', 'text-align': 'center'}
       }, {
-        name: 'Free',
+        name: 'remaining',
         value: ramSummary.total - ramSummary.otherBuckets - ramSummary.thisAlloc,
         itemStyle: {'background-color': '#E1E2E3'},
         labelStyle: {'color': '#444245', 'text-align': 'right'}
@@ -86,7 +81,7 @@
       if (bucketRamGuageConfig.items[2].value < 0) {
         bucketRamGuageConfig.items[1].value = ramSummary.total - ramSummary.otherBuckets;
         bucketRamGuageConfig.items[2] = {
-          name: 'Overcommitted',
+          name: 'overcommitted',
           value: ramSummary.otherBuckets + ramSummary.thisAlloc - ramSummary.total,
           itemStyle: {'background-color': '#F40015'},
           labelStyle: {'color': '#e43a1b'}
@@ -100,7 +95,7 @@
           itemStyle: {'background-color': 'red'}
         });
         bucketRamGuageConfig.topLeft = {
-          name: 'Total Allocated',
+          name: 'total allocated',
           value: ramSummary.otherBuckets + ramSummary.thisAlloc,
           itemStyle: {'color': '#e43a1b'}
         };
@@ -112,12 +107,12 @@
       var free = total - otherData - thisBucket - otherBuckets;
 
       guageConfig.topLeft = {
-        name: 'Other Data',
+        name: 'other data',
         value: otherData,
         itemStyle: {color: "#C19710"}
       };
       guageConfig.topRight = {
-        name: 'Total Cluster Storage',
+        name: 'total cluster storage',
         value: total
       };
       guageConfig.items = [{
@@ -126,17 +121,17 @@
         itemStyle: {'background-color':'#FDC90D', 'z-index': '3'},
         labelStyle: {}
       }, {
-        name: 'Other Buckets',
+        name: 'other buckets',
         value: otherBuckets,
         itemStyle: {'background-color':'#00BCE9', 'z-index': '2'},
         labelStyle: {'color':'#1878a2', 'text-align': 'left'}
       }, {
-        name: 'This Bucket',
+        name: 'this bucket',
         value: thisBucket,
         itemStyle: {'background-color':'#7EDB49', 'z-index': '1'},
         labelStyle: {'color':'#409f05', 'text-align': 'center'}
       }, {
-        name: 'Free',
+        name: 'remaining',
         value: free,
         itemStyle: {'background-color':'#E1E2E3'},
         labelStyle: {'color':'#444245', 'text-align': 'right'}

@@ -1,11 +1,5 @@
 <div
    mn-spinner="!bucketsDetailsCtl.bucketDetails">
-  <div
-    ng-if="bucketsDetailsCtl.warmUpTasks.length && rbac.cluster.tasks.read"
-    mn-warmup-progress
-    warm-up-tasks="bucketsDetailsCtl.warmUpTasks"
-    sort-by="hostname">
-  </div>
   <div class="row flex-left items-top">
     <div class="cbui-table-bucketprops">
       <div class="nowrap">
@@ -23,7 +17,7 @@
          ng-if="rbac.cluster.bucket[bucket.name].settings.read"
          ng-show="!bucket.isMemcached">
         <strong>Replicas:</strong>
-        {{bucketsDetailsCtl.bucketDetails.replicaNumber != 0 ? (bucketsDetailsCtl.bucketDetails.replicaNumber | mnCount:'') : 'disabled'}}
+        {{bucketsDetailsCtl.bucketDetails.replicaNumber != 0 ? (bucketsDetailsCtl.bucketDetails.replicaNumber) : 'disabled'}}
       </div>
       <div class="nowrap">
          <strong>Server Nodes: </strong> {{ bucket.nodes.length }}
@@ -32,7 +26,9 @@
          class="nowrap"
          ng-if="!bucket.isMemcached && rbac.cluster.bucket[bucket.name].settings.read">
         <strong>Ejection Method: </strong>
-        {{bucketsDetailsCtl.bucketDetails.evictionPolicy === "valueOnly" ? 'Value-Only' : 'Full'}}
+        {{bucket.isEphemeral ?
+        bucketsDetailsCtl.bucketDetails.evictionPolicy === "noEviction" ? 'No ejection' : 'NRU ejection' :
+        bucketsDetailsCtl.bucketDetails.evictionPolicy === "valueOnly" ? 'Value-Only' : 'Full'}}
       </div>
       <div class="nowrap" ng-if="!bucket.isMemcached">
         <strong>Conflict Resolution:</strong>
@@ -69,6 +65,13 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <div
+     ng-if="bucketsDetailsCtl.warmUpTasks.length && rbac.cluster.tasks.read"
+     mn-warmup-progress
+     warm-up-tasks="bucketsDetailsCtl.warmUpTasks"
+     sort-by="hostname">
   </div>
 
   <div class="row flex-right margin-top1">

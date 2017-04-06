@@ -47,10 +47,15 @@
         checkboxesToList: checkboxesToList,
         reloadApp: reloadApp,
         reloadState: reloadState,
-        listToCheckboxes: listToCheckboxes
+        listToCheckboxes: listToCheckboxes,
+        getEndings: getEndings
       };
 
       return mnHelper;
+
+      function getEndings(length) {
+        return length !== 1 ? "s" : "";
+      }
 
       function wrapInFunction(value) {
         return function () {
@@ -90,7 +95,9 @@
         $window.location.reload();
       }
       function reloadState(state) {
-        mnPendingQueryKeeper.cancelAllQueries();
+        if (!state) {
+          mnPendingQueryKeeper.cancelAllQueries();
+        }
         return $state.reload(state);
       }
     }
