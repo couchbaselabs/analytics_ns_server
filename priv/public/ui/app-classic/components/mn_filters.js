@@ -485,6 +485,7 @@
         case 'kv': return 'Data';
         case 'n1ql': return 'Query';
         case 'index': return 'Index';
+        case 'cbas': return 'Analytics';
         case 'fts': return 'Full Text';
       }
     }
