@@ -11,7 +11,6 @@
     vm.userID = vm.user.id || 'New';
     vm.roles = [];
     vm.save = save;
-    vm.onSelect = onSelect;
     vm.isEditingMode = !!user;
     vm.isLdapEnabled = isLdapEnabled;
     vm.onCheckChange = onCheckChange;
@@ -54,14 +53,18 @@
           maybeContainsSelected(role1.role, role1.bucket_name);
         });
       } else {
-        buckets.byType.names.concat("*").some(function (name) {
-          return maybeContainsSelected(role.role, name);
-        });
+        if (role.bucket_name) {
+          buckets.byType.names.concat("*").some(function (name) {
+            return maybeContainsSelected(role.role, name);
+          });
+        } else {
+          maybeContainsSelected(role.role);
+        }
       }
     }
 
     function maybeContainsSelected(role, bucketName) {
-      if (vm.selectedRoles[role + "[" + bucketName + "]"]) {
+      if (vm.selectedRoles[role + (bucketName ? "[" + bucketName + "]" : "")]) {
         vm.containsSelected[role + "_wrapper"] = true;
         vm.containsSelected[role.split("_")[0] + "_wrapper"] = true;
         return true;
@@ -69,10 +72,6 @@
         vm.containsSelected[role + "_wrapper"] = false;
         vm.containsSelected[role.split("_")[0] + "_wrapper"] = false;
       }
-    }
-
-    function onSelect(select) {
-      select.search = "";
     }
 
     function activate() {
