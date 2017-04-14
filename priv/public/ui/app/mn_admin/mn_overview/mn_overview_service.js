@@ -95,6 +95,7 @@
           index: getNodesByService("index", nodes),
           n1ql: getNodesByService("n1ql", nodes),
           fts: getNodesByService("fts", nodes),
+          cbas: getNodesByService("cbas", nodes),
           all: nodes
         };
       });

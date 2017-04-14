@@ -14,12 +14,8 @@
           kv: true,
           index: $scope.poolDefault.compat.atLeast40,
           n1ql: $scope.poolDefault.compat.atLeast40,
-<<<<<<< HEAD
-          fts: false,
-          cbas: false,
-=======
-          fts: $scope.poolDefault.compat.atLeast50
->>>>>>> upstream/master
+          fts: $scope.poolDefault.compat.atLeast50,
+          cbas: $scope.poolDefault.compat.atLeast50
         }
       },
       credentials: {

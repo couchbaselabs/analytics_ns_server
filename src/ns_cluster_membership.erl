@@ -361,5 +361,7 @@ user_friendly_service_name(n1ql) ->
     "query";
 user_friendly_service_name(fts) ->
     "full text search";
+user_friendly_service_name(cbas) ->
+    "analytics";
 user_friendly_service_name(Service) ->
     atom_to_list(Service).

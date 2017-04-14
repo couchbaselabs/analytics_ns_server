@@ -31,7 +31,7 @@
       },
       services: {
         disabled: {kv: false, index: false, n1ql: false, fts: false, cbas: false},
-        model: {kv: true, index: true, n1ql: true, fts: false, cbas: false}
+        model: {kv: true, index: true, n1ql: true, fts: true, cbas: true}
       },
       firstTimeAddedServices: undefined
     };
@@ -42,7 +42,7 @@
       displayedServices: {kv: true, index: true, fts: true, cbas: true, n1ql: true},
       services: {
         disabled: {kv: true, index: false, n1ql: false, fts: false, cbas: false},
-        model: {kv: true, index: true, n1ql: true, fts: false, cbas: false}
+        model: {kv: true, index: true, n1ql: true, fts: true, cbas: true}
       },
       showKVMemoryQuota: true,
       showIndexMemoryQuota: true,
