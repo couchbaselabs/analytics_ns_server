@@ -275,7 +275,7 @@ dynamic_children(normal) ->
              per_bucket_moxi_specs(Config),
              maybe_create_ssl_proxy_spec(Config),
              run_via_goport(fun fts_spec/1, Config),
-             run_via_goport(fun cbas_spec/1, Config),
+             run_via_goport_graceful_exit(fun cbas_spec/1, Config),
              run_via_goport(fun example_service_spec/1, Config)],
 
     lists:flatten(Specs).
@@ -529,6 +529,33 @@ do_run_via_goport({Name, Cmd, Args, Opts}) ->
     Opts1 = lists:keystore(env, 1, Opts, {env, Env1}),
     {Name, GoportPath, [], Opts1}.
 
+run_via_goport_graceful_exit(SpecFun, Config) ->
+  Specs = case SpecFun(Config) of
+            [] ->
+              [];
+            [Specs1] ->
+              [expand_args(Specs1, Config)]
+          end,
+  lists:map(fun do_run_via_goport_graceful_exit/1, Specs).
+
+do_run_via_goport_graceful_exit({Name, Cmd, Args, Opts}) ->
+  GoportName =
+    case erlang:system_info(system_architecture) of
+      "win32" ->
+        "goport.exe";
+      _ ->
+        "goport"
+    end,
+
+  GoportPath = path_config:component_path(bin, GoportName),
+  GoportArgsEnv = binary_to_list(ejson:encode([list_to_binary(L) || L <- [Cmd | Args]])),
+
+  Env = proplists:get_value(env, Opts, []),
+  Env1 = [{"GOPORT_ARGS", GoportArgsEnv} | Env],
+
+  Opts1 = lists:keystore(env, 1, Opts, {env, Env1}),
+  {Name, GoportPath, ["-graceful-shutdown"], Opts1}.
+
 moxi_spec(Config) ->
     case ns_cluster_membership:should_run_service(Config, kv, node()) of
         true ->
@@ -655,15 +682,15 @@ cbas_spec(Config) ->
             NsRestPort = misc:node_rest_port(Config, node()),
             CBASRestPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
             {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
-            CBASDir = filename:join(IdxDir, "@cbas"),
+            CBASDir = filename:join(IdxDir, "@analytics"),
             ok = misc:ensure_writable_dir(CBASDir),
             {_, Host} = misc:node_name_host(node()),
-            BindHttp = io_lib:format("~s:~b,0.0.0.0:~b", [Host, CBASRestPort, CBASRestPort]),
-            BindHttps = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
+            BindHttpPort = integer_to_list(CBASRestPort),
+            HttpsOptions = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
                             undefined ->
                                 [];
                             Port ->
-                                ["-bindHttps=:" ++ integer_to_list(Port),
+                                ["-bindHttpsPort=" ++ integer_to_list(Port),
                                  "-tlsCertFile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
                                  "-tlsKeyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
                         end,
@@ -672,13 +699,13 @@ cbas_spec(Config) ->
                     [
                      "-uuid=" ++ NodeUUID,
                      "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
-                     "-bindHttp=" ++ BindHttp,
+                     "-bindHttpPort=" ++ BindHttpPort,
                      "-dataDir=" ++ CBASDir,
                      "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
-                    ] ++ BindHttps,
+                    ] ++ HttpsOptions,
                     [use_stdio, exit_status, stderr_to_stdout, stream,
-                     {log, ?CBAS_LOG_FILENAME},
-                     {env, build_go_env_vars(Config, cbas)}]},
+                      {log, ?CBAS_LOG_FILENAME},
+                      {env, build_go_env_vars(Config, cbas)}]},
             [Spec]
     end.
 

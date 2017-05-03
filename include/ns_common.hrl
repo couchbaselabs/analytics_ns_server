@@ -81,7 +81,7 @@
 -define(INDEXER_LOG_FILENAME, "indexer.log").
 -define(METAKV_LOG_FILENAME, "metakv.log").
 -define(FTS_LOG_FILENAME, "fts.log").
--define(CBAS_LOG_FILENAME, "cbas.log").
+-define(CBAS_LOG_FILENAME, "analytics.log").
 -define(JSON_RPC_LOG_FILENAME, "json_rpc.log").
 
 -define(NS_SERVER_LOGGER, ns_server).
