@@ -40,7 +40,7 @@
       mnClusterConfigurationService
         .postStats(vm.register, true).then(function () {
           mnServersService
-            .setupServices({services: 'kv,index,fts,n1ql'}).then(function () {
+            .setupServices({services: 'kv,index,fts,cbas,n1ql'}).then(function () {
               var newClusterState = mnWizardService.getNewClusterState();
               var newClusterConfig = mnClusterConfigurationService.getNewClusterConfig();
               mnSettingsClusterService.postIndexSettings(newClusterConfig.indexSettings);
