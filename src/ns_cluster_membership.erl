@@ -249,7 +249,7 @@ default_services() ->
 topology_aware_services_for_version(Version) ->
     case cluster_compat_mode:is_version_45(Version) of
         true ->
-            Services = [fts | maybe_example_service()],
+            Services = [fts,cbas | maybe_example_service()],
             case cluster_compat_mode:is_version_spock(Version) of
                 true ->
                     [index | Services];
