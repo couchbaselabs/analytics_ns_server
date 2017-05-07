@@ -699,6 +699,7 @@ cbas_spec(Config) ->
                     [
                      "-uuid=" ++ NodeUUID,
                      "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
+                     "-bindHttpAddress=" ++ Host,
                      "-bindHttpPort=" ++ BindHttpPort,
                      "-dataDir=" ++ CBASDir,
                      "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
