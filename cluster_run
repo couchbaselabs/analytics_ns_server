@@ -160,7 +160,16 @@ def erlang_args_for_node(i):
         "indexer_stmaint_port", str(base_indexer_port + i * 6 + 5),
         "fts_http_port", str(base_fts_port + i),
         "fts_ssl_port", str(10000 + base_fts_port + i),
-        "cbas_http_port", str(base_cbas_port + i),
+        "cbas_http_port", str(base_cbas_port + i * 10),
+        "cbas_cc_http_port", str(base_cbas_port + 1),
+        "cbas_cc_cluster_port", str(base_cbas_port + 2),
+        "cbas_cc_client_port", str(base_cbas_port + + 3),
+        "cbas_hyracks_console_port", str(base_cbas_port + 4),
+        "cbas_cluster_port", str(base_cbas_port + i * 10 + 5),
+        "cbas_data_port", str(base_cbas_port + i * 10 + 6),
+        "cbas_result_port", str(base_cbas_port + i * 10 + 7),
+        "cbas_messaging_port", str(base_cbas_port + i * 10 + 8),
+        "cbas_debug_port", str(base_cbas_port + i * 10 + 9),
         "cbas_ssl_port", str(10000 + base_cbas_port + i)
         ] + cluster_extra_args
 

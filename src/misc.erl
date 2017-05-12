@@ -241,7 +241,7 @@ getenv_int(VariableName, DefaultValue) ->
         _ -> DefaultValue
     end.
 
-% Get an application environment variable, or a defualt value.
+% Get an application environment variable, or a default value.
 get_env_default(Var, Def) ->
     case application:get_env(Var) of
         {ok, Value} -> Value;

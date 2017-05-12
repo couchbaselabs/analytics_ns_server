@@ -680,12 +680,15 @@ cbas_spec(Config) ->
             [];
         _ ->
             NsRestPort = misc:node_rest_port(Config, node()),
-            CBASRestPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
+            CBASHttpPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
+            CBASCCHttpPort = ns_config:search(Config, {node, node(), cbas_cc_http_port}, 8200),
+
+            DebugPort = ns_config:search(Config, {node, node(), cbas_debug_port}, -1),
+
             {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
             CBASDir = filename:join(IdxDir, "@analytics"),
             ok = misc:ensure_writable_dir(CBASDir),
             {_, Host} = misc:node_name_host(node()),
-            BindHttpPort = integer_to_list(CBASRestPort),
             HttpsOptions = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
                             undefined ->
                                 [];
@@ -700,8 +703,11 @@ cbas_spec(Config) ->
                      "-uuid=" ++ NodeUUID,
                      "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
                      "-bindHttpAddress=" ++ Host,
-                     "-bindHttpPort=" ++ BindHttpPort,
+                     "-bindHttpPort=" ++ integer_to_list(CBASHttpPort),
                      "-dataDir=" ++ CBASDir,
+                     "-cbasExecutable=" ++ CBASCmd,
+                     "-debugPort=" ++ integer_to_list(DebugPort),
+                     "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
                      "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
                     ] ++ HttpsOptions,
                     [use_stdio, exit_status, stderr_to_stdout, stream,
