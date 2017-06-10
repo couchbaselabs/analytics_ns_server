@@ -1,78 +1,106 @@
-<div class="interim row margin-top1">
-  <div class="row flex-left width-12">
-    <h4>Documents</h4>
-    <span class="text-small indent-1">Filter:&nbsp;</span>
+<mn-element-cargo depot="actions">
+  <div class="header-controls">
+    <a
+       ng-show="!documentsControlCtl.isEmptyState() && rbac.cluster.bucket[documentsCtl.currentBucketName].data.write"
+       ng-click="documentsListCtl.showCreateDialog()">
+      ADD DOCUMENT
+    </a>
+  </div>
+</mn-element-cargo>
+
+<div class="row margin-top-half margin-bottom-half">
+  <div class="row flex-left min-width-zero">
+    <ui-select
+       on-select="documentsCtl.onSelectBucketName($item)"
+       ng-model="documentsCtl.currentBucketName"
+       theme="selectize"
+       style="display: inline-block; vertical-align: middle;"
+       class="cbui">
+      <ui-select-match
+         class="ui-select-match">{{$select.selected}}</ui-select-match>
+      <ui-select-choices
+         class="ui-select-choices"
+         repeat="name in rbac.bucketNames['.data.docs!read'] | filter: $select.search">
+        <span class="select-item ellipsis" ng-bind-html="name | highlight: $select.search"></span>
+      </ui-select-choices>
+    </ui-select>
     <div
-       mn-filter
-       config="documentsListCtl.filterConfig"
-       mn-disabled="documentsControlCtl.isEmptyState()"
-       on-close="documentsListCtl.onFilterClose()"
-       on-reset="documentsListCtl.onFilterReset()"
-       ></div>
+       class="row min-width-zero"
+       ng-if="!buckets.details.byName[documentsCtl.currentBucketName].isEphemeral">
+      <div
+         mn-filter
+         class="indent-1"
+         config="documentsListCtl.filterConfig"
+         mn-disabled="documentsControlCtl.isEmptyState()"
+         on-close="documentsListCtl.onFilterClose()"
+         on-reset="documentsListCtl.onFilterReset()"
+         ></div>
+      <span class="text-small padding-left-half">filter:</span>
+      <a
+         class="text-small ellipsis padding-left-half"
+         ng-href="{{documentsListCtl.getDocumentsURI()}}"
+         target="_blank"
+         >
+        {{documentsListCtl.getFilterParamsAsString()}}
+      </a>
+    </div>
   </div>
-  <div class="row nowrap">
-    <form ng-submit="!documentsControlCtl.isEmptyState() && documentsListCtl.lookupSubmit()">
-      <input
-         type="text"
-         autocorrect="off"
-         spellcheck="false"
-         autocapitalize="off"
-         placeholder="Document ID"
-         ng-model="documentsListCtl.lookupId"
-         ng-disabled="documentsControlCtl.isEmptyState() || !rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.read">
-      <button
-         type="submit"
-         ng-disabled="documentsControlCtl.isEmptyState()"
-         ng-class="!rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.read">
-        Lookup Id
-      </button>
-    </form>
-    &nbsp;
+  <form ng-submit="!documentsControlCtl.isEmptyState() && documentsListCtl.lookupSubmit()"
+        class="row flex-right indent-1">
+    <input
+       type="text"
+       class="prepend fix-width-4"
+       autocorrect="off"
+       spellcheck="false"
+       autocapitalize="off"
+       placeholder="Document ID"
+       ng-model="documentsListCtl.lookupId"
+       ng-disabled="documentsControlCtl.isEmptyState() || !rbac.cluster.bucket[documentsCtl.currentBucketName].data.read">
     <button
-       ng-disabled="documentsControlCtl.isEmptyState() || !rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.write"
-       ng-click="documentsListCtl.showCreateDialog()">Create Document</button>
-  </div>
+       type="submit"
+       class="append"
+       ng-disabled="documentsControlCtl.isEmptyState() || !rbac.cluster.bucket[documentsCtl.currentBucketName].data.read">
+      Look Up ID
+    </button>
+  </form>
 </div>
 
 <div mn-spinner="!documentsControlCtl.state || documentsControlCtl.viewLoading">
-  <table class="table-stroked">
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Content</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr
-         class="has-hover"
-         ui-sref="^.^.editing({documentId: r.id})"
-         ng-repeat="r in documentsControlCtl.state.docs.rows track by r.id"
-         ng-show="documentsControlCtl.state.docs.rows.length">
-        <td class="break-all max-width-4">
-          <a href="">{{ r.id }}</a>
-        </td>
-        <td class="break-all">
+  <div class="cbui-table">
+    <div class="cbui-table-header-filled padding-left">
+      <span class="cbui-table-cell">ID</span>
+      <span class="cbui-table-cell flex-grow-2">content sample</span>
+      <span class="cbui-table-cell"></span>
+    </div>
+
+    <section
+       class="has-hover"
+       ui-sref="^.^.editing({documentId: r.id})"
+       ng-repeat="r in documentsControlCtl.state.docs.rows track by r.id"
+       ng-show="documentsControlCtl.state.docs.rows.length">
+      <div class="cbui-tablerow">
+        <span class="cbui-table-cell wrap break-word">{{ r.id }}</span>
+        <span class="cbui-table-cell flex-grow-2 wrap break-word">
           {{r.doc.json !== undefined ? r.doc.json : r.doc.base64 | mnLimitTo: 200}}
-        </td>
-        <td class="text-right nowrap">
+        </span>
+        <span class="cbui-table-cell wrap text-right">
           <button
-             class="outline"
-             ng-show="rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.write"
+             class="outline tight"
+             ng-show="rbac.cluster.bucket[documentsCtl.currentBucketName].data.write"
              ng-click="$event.stopPropagation(); documentsListCtl.deleteDocument(r.id)">Delete</button>
           <button
              ng-click="$event.stopPropagation()"
-             ui-sref="^.^.editing({documentId: r.id})">
-            <span ng-show="rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.write">Edit Document</span>
-            <span ng-show="rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.read && !rbac.cluster.bucket[documentsCtl.state.bucketsNames.selected].data.write">View Document</span>
+             ui-sref="^.^.editing({documentId: r.id})"
+             class="outline tight">
+            <span ng-show="rbac.cluster.bucket[documentsCtl.currentBucketName].data.write">Edit</span>
+            <span ng-show="rbac.cluster.bucket[documentsCtl.currentBucketName].data.read && !rbac.cluster.bucket[documentsCtl.currentBucketName].data.write">View Document</span>
           </button>
-        </td>
-      </tr>
-      <tr ng-if="!documentsControlCtl.state.docs.rows.length">
-        <td colspan="3">
-          There are currently no documents in this bucket {{ searchCriteria ? ' corresponding to the search criteria.' : '.' }}
-        </td>
-      </tr>
-    </tbody>
-  </table>
+        </span>
+      </div>
+    </section>
+    <div ng-show="!documentsControlCtl.state.docs.rows.length && !documentsControlCtl.state.status" class="zero-content">
+      <span ng-show="!buckets.details.byName[documentsCtl.currentBucketName].isEphemeral">There are currently no documents in this bucket{{ searchCriteria ? ' corresponding to the search criteria.' : '.' }}</span>
+      <span ng-show="buckets.details.byName[documentsCtl.currentBucketName].isEphemeral">Documents are retrieved from ephemeral buckets by using the id lookup.</span>
+    </div>
+  </div>
 </div>

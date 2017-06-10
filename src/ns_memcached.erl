@@ -106,7 +106,7 @@
          raw_stats/5,
          sync_bucket_config/1,
          flush/1,
-         set/4,
+         set/5,
          ready_nodes/4,
          sync/4, add/4, get/3, delete/3, delete/4,
          get_from_replica/3,
@@ -363,7 +363,7 @@ assign_queue({add, _Key, _VBucket, _Value}) -> #state.heavy_calls_queue;
 assign_queue({get, _Key, _VBucket}) -> #state.heavy_calls_queue;
 assign_queue({get_from_replica, _Key, _VBucket}) -> #state.heavy_calls_queue;
 assign_queue({delete, _Key, _VBucket, _CAS}) -> #state.heavy_calls_queue;
-assign_queue({set, _Key, _VBucket, _Value}) -> #state.heavy_calls_queue;
+assign_queue({set, _Key, _VBucket, _Value, _Flags}) -> #state.heavy_calls_queue;
 assign_queue({get_keys, _VBuckets, _Params}) -> #state.heavy_calls_queue;
 assign_queue({sync, _Key, _VBucket, _CAS}) -> #state.very_heavy_calls_queue;
 assign_queue({get_mass_dcp_docs_estimate, _VBuckets}) -> #state.very_heavy_calls_queue;
@@ -521,10 +521,10 @@ do_handle_call({delete, Key, VBucket, CAS}, _From, State) ->
                                   #mc_entry{key = Key, cas = CAS}}),
     {reply, Reply, State};
 
-do_handle_call({set, Key, VBucket, Val}, _From, State) ->
+do_handle_call({set, Key, VBucket, Val, Flags}, _From, State) ->
     Reply = mc_client_binary:cmd(?SET, State#state.sock, undefined, undefined,
                                  {#mc_header{vbucket = VBucket},
-                                  #mc_entry{key = Key, data = Val}}),
+                                  #mc_entry{key = Key, data = Val, flag = Flags}}),
     {reply, Reply, State};
 
 do_handle_call({add, Key, VBucket, Val}, _From, State) ->
@@ -842,7 +842,12 @@ connected(Node, Bucket) ->
 
 -spec warmed(node(), bucket_name(), pos_integer() | infinity) -> boolean().
 warmed(Node, Bucket, Timeout) ->
-    do_call({server(Bucket), Node}, warmed, Timeout).
+    try
+        do_call({server(Bucket), Node}, warmed, Timeout)
+    catch
+        _:_ ->
+            false
+    end.
 
 -spec warmed(node(), bucket_name()) -> boolean().
 warmed(Node, Bucket) ->
@@ -942,12 +947,11 @@ delete(Bucket, Key, VBucket) ->
     delete(Bucket, Key, VBucket, 0).
 
 %% @doc send a set command to memcached instance
--spec set(bucket_name(), binary(), integer(), binary()) ->
+-spec set(bucket_name(), binary(), integer(), binary(), integer()) ->
     {ok, #mc_header{}, #mc_entry{}, any()} | {memcached_error, any(), any()}.
-set(Bucket, Key, VBucket, Value) ->
+set(Bucket, Key, VBucket, Value, Flags) ->
     do_call({server(Bucket), node()},
-            {set, Key, VBucket, Value}, ?TIMEOUT_HEAVY).
-
+            {set, Key, VBucket, Value, Flags}, ?TIMEOUT_HEAVY).
 
 -spec update_with_rev(Bucket::bucket_name(), VBucket::vbucket_id(),
                       Id::binary(), Value::binary() | undefined, Rev :: rev(),
@@ -1280,14 +1284,15 @@ maybe_set_drift_thresholds(Sock, Bucket, {DAT, DBT}, ActualDAT, ActualDBT) ->
                  item_eviction_policy = missing_eviction_policy,
                  ephemeral_full_policy = missing_ephemeral_full_policy,
                  ahead_threshold = missing_ahead_threshold,
-                 behind_threshold = missing_behind_threshold}).
+                 behind_threshold = missing_behind_threshold,
+                 ephemeral_metadata_purge_age = missing_ephemeral_metadata_purge_age}).
 
 -spec ensure_bucket_config(port(), bucket_name(), bucket_type(),
                            {pos_integer(), nonempty_string()}) ->
                                   ok | no_return().
 ensure_bucket_config(Sock, Bucket, membase,
                      {MaxSize, DBDir, NumThreads, ItemEvictionPolicy, EphemeralFullPolicy,
-                      DriftThresholds}) ->
+                      DriftThresholds, EphemeralPurgeAge}) ->
     MaxSizeBin = list_to_binary(integer_to_list(MaxSize)),
     DBDirBin = list_to_binary(DBDir),
     NumThreadsBin = list_to_binary(integer_to_list(NumThreads)),
@@ -1299,7 +1304,8 @@ ensure_bucket_config(Sock, Bucket, membase,
                  item_eviction_policy = ActualItemEvictionPolicy,
                  ephemeral_full_policy = ActualEphemeralFullPolicy,
                  ahead_threshold = ActualDAT,
-                 behind_threshold = ActualDBT}} =
+                 behind_threshold = ActualDBT,
+                 ephemeral_metadata_purge_age = ActualPurgeAge}} =
         mc_binary:quick_stats(
           Sock, <<>>,
           fun (<<"ep_max_size">>, V, QStats) ->
@@ -1316,6 +1322,8 @@ ensure_bucket_config(Sock, Bucket, membase,
                   QStats#qstats{ahead_threshold = V};
               (<<"ep_hlc_drift_behind_threshold_us">>, V, QStats) ->
                   QStats#qstats{behind_threshold = V};
+              (<<"ep_ephemeral_metadata_purge_age">>, V, QStats) ->
+                  QStats#qstats{ephemeral_metadata_purge_age = V};
               (_, _, QStats) ->
                   QStats
           end, #qstats{}),
@@ -1350,6 +1358,15 @@ ensure_bucket_config(Sock, Bucket, membase,
         true ->
             maybe_update_ephemeral_full_policy(Sock, Bucket, EphemeralFullPolicyBin,
                                                ActualEphemeralFullPolicy);
+        false ->
+            ok
+    end,
+
+    case EphemeralPurgeAge =/= undefined of
+        true ->
+            EphemeralPurgeAgeBin = list_to_binary(integer_to_list(EphemeralPurgeAge)),
+            maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, EphemeralPurgeAgeBin,
+                                                   ActualPurgeAge);
         false ->
             ok
     end,
@@ -1396,12 +1413,24 @@ ensure_bucket_config(Sock, _Bucket, memcached, _MaxSize) ->
 maybe_update_ephemeral_full_policy(Sock, Bucket, NewFullPolicy, CurrFullPolicy) ->
     case NewFullPolicy =/= CurrFullPolicy of
         true ->
-            ok = mc_client_binary:set_engine_param(Sock,
+            ok = mc_client_binary:set_flush_param(Sock,
                                                    <<"ephemeral_full_policy">>,
-                                                   NewFullPolicy,
-                                                   flush),
+                                                   NewFullPolicy),
             ?log_info("Ephemeral full policy changed from '~s' to '~s' for bucket ~p",
                       [CurrFullPolicy, NewFullPolicy, Bucket]),
+            ok;
+        false ->
+            ok
+    end.
+
+maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, NewPurgeAge, CurrPurgeAge) ->
+    case NewPurgeAge =/= CurrPurgeAge of
+        true ->
+            ok = mc_client_binary:set_flush_param(Sock,
+                                                   <<"ephemeral_metadata_purge_age">>,
+                                                   NewPurgeAge),
+            ?log_info("Ephemeral metadata purge age changed from '~s' to '~s' for bucket ~p",
+                      [CurrPurgeAge, NewPurgeAge, Bucket]),
             ok;
         false ->
             ok

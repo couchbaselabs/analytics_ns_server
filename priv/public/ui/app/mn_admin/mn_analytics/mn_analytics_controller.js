@@ -17,6 +17,7 @@
     vm.computeOps = computeOps;
     vm.onSelectBucket = onSelectBucket;
     vm.onSelectNode = onSelectNode;
+    vm.currentBucket = $state.params.bucket;
 
     activate();
 
@@ -39,22 +40,10 @@
       })
       .setInterval(function (response) {
         //TODO add error handler
-        return response.isEmptyState ? 10000 : response.stats.nextReqAfter;
+        return response.status ? 10000 : response.stats.nextReqAfter;
       })
       .subscribe("state", vm)
       .reloadOnScopeEvent("reloadAnalyticsPoller");
-
-      new mnPoller($scope, function () {
-        return mnBucketsService.getBucketsByType().then(function (buckets) {
-          var rv = {};
-          rv.bucketsNames = buckets.byType.names;
-          rv.bucketsNames.selected = $state.params.bucket;
-          return rv;
-        });
-      })
-      .subscribe("buckets", vm)
-      .reloadOnScopeEvent("bucketUriChanged")
-      .cycle();
     }
     function onSelectBucket(selectedBucket) {
       $state.go('^.graph', {
@@ -63,7 +52,7 @@
     }
     function onSelectNode(selectedHostname) {
       $state.go('^.graph', {
-        statsHostname: selectedHostname.indexOf("All Server Nodes") > -1 ? undefined : selectedHostname
+        statsHostname: selectedHostname.indexOf("All Server Nodes") > -1 ? "all" : selectedHostname
       });
     }
     function computeOps(key) {

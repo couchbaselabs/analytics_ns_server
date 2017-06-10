@@ -36,13 +36,19 @@
       return roles2;
     }
 
-    function getUsers() {
-      return $http({
+    function getUsers(params) {
+      var config = {
         method: "GET",
         url: "/settings/rbac/users"
-      }).then(function (resp) {
-        return resp.data;
-      });
+      };
+      if (params) {
+        config.params = {
+          pageSize: params.pageSize,
+          startFromDomain: params.startFromDomain,
+          startFrom: params.startFrom
+        };
+      }
+      return $http(config);
     }
 
     function deleteUser(user) {
@@ -53,7 +59,7 @@
     }
 
     function getUserUrl(user) {
-      return "/settings/rbac/users/" + encodeURIComponent(user.type) + "/"  + encodeURIComponent(user.id);
+      return "/settings/rbac/users/" + encodeURIComponent(user.domain) + "/"  + encodeURIComponent(user.id);
     }
 
     function prepareUserRoles(userRoles) {
@@ -89,7 +95,7 @@
         roles: roles.join(','),
         name: user.name
       };
-      if (user.type === "builtin") {
+      if (user.domain === "local") {
         data.password = user.password;
       }
 
@@ -135,7 +141,7 @@
         return doAddUser(user, roles);
       } else {
         return getUsers().then(function (users) {
-          if (_.find(users, {id: user.id, type: user.type})) {
+          if (_.find(users, {id: user.id, domain: user.domain})) {
             return $q.reject({username: "username already exists"});
           } else {
             return doAddUser(user, roles);
@@ -145,10 +151,20 @@
 
     }
 
-    function getState() {
-      return getUsers().then(function (users) {
-        return {users: users};
-      })
+    function getState(params) {
+      return getUsers(params).then(function (resp) {
+        var i;
+        for (i in resp.data.links) {
+          resp.data.links[i] = resp.data.links[i].split("?")[1]
+            .split("&")
+            .reduce(function(prev, curr, i, arr) {
+              var p = curr.split("=");
+              prev[decodeURIComponent(p[0])] = decodeURIComponent(p[1]);
+              return prev;
+            }, {});
+        }
+        return resp.data;
+      });
     }
   }
 })();

@@ -13,14 +13,28 @@
 
     return mnSettingsClusterService;
 
+    function maybeSetQuota(data, memory, service, key) {
+      if (!memory.services || memory.services.model[service]) {
+        if (memory[key] === null) {
+          data[key] = "";
+        } else {
+          data[key] = memory[key];
+        }
+      }
+    }
+
     function postPoolsDefault(memoryQuotaConfig, justValidate, clusterName) {
       var data = {
-        memoryQuota: memoryQuotaConfig.memoryQuota === null ? "" : memoryQuotaConfig.memoryQuota,
-        indexMemoryQuota: memoryQuotaConfig.indexMemoryQuota === null ? "" : memoryQuotaConfig.indexMemoryQuota,
-        ftsMemoryQuota: memoryQuotaConfig.ftsMemoryQuota === null ? "" : memoryQuotaConfig.ftsMemoryQuota,
-        cbasMemoryQuota: memoryQuotaConfig.cbasMemoryQuota === null ? "" : memoryQuotaConfig.cbasMemoryQuota,
         clusterName: clusterName
+      };
+
+      if (memoryQuotaConfig) {
+        maybeSetQuota(data, memoryQuotaConfig, "kv", "memoryQuota");
+        maybeSetQuota(data, memoryQuotaConfig, "index", "indexMemoryQuota");
+        maybeSetQuota(data, memoryQuotaConfig, "fts", "ftsMemoryQuota");
+        maybeSetQuota(data, memoryQuotaConfig, "cbas", "cbasMemoryQuota");
       }
+
       var config = {
         method: 'POST',
         url: '/pools/default',

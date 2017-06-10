@@ -9,6 +9,39 @@
 
     this.$get = ["$http", "$timeout", "$q", "$rootScope", "mnBucketsService", "$parse", mnPermissionsFacatory];
     this.set = set;
+    this.setBucketSpecific = setBucketSpecific;
+
+    var bucketSpecificPermissions = [function (name, buckets) {
+      var basePermissions = [
+        "cluster.bucket[" + name + "].settings!write",
+        "cluster.bucket[" + name + "].settings!read",
+        "cluster.bucket[" + name + "].recovery!write",
+        "cluster.bucket[" + name + "].recovery!read",
+        "cluster.bucket[" + name + "].stats!read",
+        "cluster.bucket[" + name + "]!flush",
+        "cluster.bucket[" + name + "]!delete",
+        "cluster.bucket[" + name + "]!compact",
+        "cluster.bucket[" + name + "].xdcr!read",
+        "cluster.bucket[" + name + "].xdcr!write",
+        "cluster.bucket[" + name + "].xdcr!execute"
+      ];
+      if (name === "." || buckets.byName[name].isMembase) {
+        basePermissions = basePermissions.concat([
+          "cluster.bucket[" + name + "].views!read",
+          "cluster.bucket[" + name + "].views!write",
+          "cluster.bucket[" + name + "].views!compact"
+        ]);
+      }
+      if (name === "." || !buckets.byName[name].isMemcached) {
+        basePermissions = basePermissions.concat([
+          "cluster.bucket[" + name + "].data!write",
+          "cluster.bucket[" + name + "].data!read",
+          "cluster.bucket[" + name + "].data.docs!read"
+        ]);
+      }
+
+      return basePermissions
+    }];
 
     var interestingPermissions = [
       "cluster.buckets!create",
@@ -28,6 +61,8 @@
       "cluster.xdcr.remote_clusters!write",
       "cluster.admin.security!read",
       "cluster.admin.logs!read",
+      "cluster.admin.settings!read",
+      "cluster.admin.settings!write",
       "cluster.logs!read",
       "cluster.pools!write",
       "cluster.indexes!write",
@@ -44,13 +79,28 @@
       if (!_.contains(interestingPermissions, permission)) {
         interestingPermissions.push(permission);
       }
+      return this;
+    }
+
+    function setBucketSpecific(func) {
+      if (angular.isFunction(func)) {
+        bucketSpecificPermissions.push(func);
+      }
+      return this;
+    }
+
+    function generateBucketPermissions(bucketName, buckets) {
+      return bucketSpecificPermissions.reduce(function (acc, getChunk) {
+        return acc.concat(getChunk(bucketName, buckets));
+      }, []);
     }
 
     function mnPermissionsFacatory($http, $timeout, $q, $rootScope, mnBucketsService, $parse) {
       var mnPermissions = {
         clear: clear,
-        set: set,
+        get: doCheck,
         check: check,
+        getFresh: getFresh,
         export: {
           data: {},
           cluster: {},
@@ -60,86 +110,71 @@
           }
         }
       };
-      var promisePerPermission = {};
-      var timeId;
+
+      var cache;
+
+      interestingPermissions.push(generateBucketPermissions("."));
 
       return mnPermissions;
-
-      function generateBucketPermissions(name) {
-        return [
-          "cluster.bucket[" + name + "].settings!write",
-          "cluster.bucket[" + name + "].data!write",
-          "cluster.bucket[" + name + "].recovery!write",
-          "cluster.bucket[" + name + "].settings!read",
-          "cluster.bucket[" + name + "].data!read",
-          "cluster.bucket[" + name + "].data.docs!read",
-          "cluster.bucket[" + name + "].recovery!read",
-          "cluster.bucket[" + name + "].views!read",
-          "cluster.bucket[" + name + "].views!write",
-          "cluster.bucket[" + name + "].stats!read",
-          "cluster.bucket[" + name + "]!flush",
-          "cluster.bucket[" + name + "]!delete",
-          "cluster.bucket[" + name + "]!compact",
-          "cluster.bucket[" + name + "].views!compact",
-          "cluster.bucket[" + name + "].xdcr!read",
-          "cluster.bucket[" + name + "].xdcr!write",
-          "cluster.bucket[" + name + "].xdcr!execute"
-        ];
-      }
 
       function clear() {
         delete $rootScope.rbac;
         mnPermissions.export.cluster = {};
         mnPermissions.export.data = {};
+        clearCache();
+      }
+
+      function clearCache() {
+        cache = null;
+      }
+
+      function getFresh() {
+        clearCache();
+        return mnPermissions.check();
       }
 
       function check() {
-        return doCheck(getAll().concat(generateBucketPermissions('*'))).then(function (resp) {
-          if (resp.cluster.bucket['*'].settings.read) {
-            return mnBucketsService.getBucketsByType().then(function (bucketsDetails) {
-              var permissions = [];
+        if (!!cache) {
+          return $q.when(mnPermissions.export);
+        }
 
+        return doCheck(["cluster.bucket[.].settings!read"]).then(function (resp) {
+          var permissions = getAll();
+          if (resp.data["cluster.bucket[.].settings!read"]) {
+            return mnBucketsService.getBucketsByType().then(function (bucketsDetails) {
               if (bucketsDetails.length) {
                 angular.forEach(bucketsDetails, function (bucket) {
-                  permissions = permissions.concat(generateBucketPermissions(bucket.name));
+                  permissions = permissions.concat(generateBucketPermissions(bucket.name, bucketsDetails));
                 });
-
-                mnPermissions.export.default.all = bucketsDetails.byType.defaultName;
-                mnPermissions.export.default.membase = bucketsDetails.byType.membase.defaultName;
-                mnPermissions.export.default.ephemeral = bucketsDetails.byType.ephemeral.defaultName;
-                return doCheck(permissions);
               }
-              return resp;
+              return doCheck(permissions).then(function (resp) {
+                var bucketNamesByPermission = {};
+                var permissions = resp.data;
+                angular.forEach(bucketsDetails, function (bucket) {
+                  var interesting = generateBucketPermissions(bucket.name, bucketsDetails);
+                  angular.forEach(interesting, function (permission) {
+                    var bucketPermission = permission.split("[" + bucket.name + "]")[1];
+                    bucketNamesByPermission[bucketPermission] = bucketNamesByPermission[bucketPermission] || [];
+                    if (permissions[permission]) {
+                      bucketNamesByPermission[bucketPermission].push(bucket.name);
+                    }
+                  });
+                });
+                resp.bucketNames = bucketNamesByPermission;
+                return resp;
+              });
             });
           } else {
-            return resp;
+            return doCheck(permissions);
           }
-        });
-      }
+        }).then(function (resp) {
+          cache = convertIntoTree(resp.data);
 
-      function createWildcard(cluster, wildcard) {
-        for (var bucket in cluster.bucket) {
-          if (bucket != "*" && $parse(wildcard.join("."))(cluster.bucket[bucket])) {
-            wildcard.unshift("bucket['*']");
-            $parse(wildcard.join(".")).assign(cluster, true);
-            return;
-          }
-        }
-        wildcard.unshift("bucket['*']");
-        $parse(wildcard.join(".")).assign(cluster, false);
-      }
+          mnPermissions.export.data = resp.data;
+          mnPermissions.export.cluster = cache.cluster;
+          mnPermissions.export.bucketNames = resp.bucketNames || {};
 
-      function createWildcards(root) {
-        var wildcards = [
-          ["stats", "read"],
-          ["xdcr", "read"],
-          ["xdcr", "write"],
-          ["xdcr", "execute"]
-        ];
-
-        root.cluster.bucket = root.cluster.bucket || {};
-        wildcards.forEach(function (wildcard) {
-          createWildcard(root.cluster, wildcard);
+          return mnPermissions.export;
         });
       }
 
@@ -156,7 +191,6 @@
           var path = levels.shift() + "['" + levels.join("']['") + "']"; //in order to properly handle bucket names
           $parse(path).assign(rv, value);
         });
-        createWildcards(rv);
         return rv;
       }
 
@@ -165,22 +199,6 @@
           method: "POST",
           url: "/pools/default/checkPermissions",
           data: interestingPermissions.join(',')
-        }).then(function (resp) {
-          var rv = convertIntoTree(resp.data);
-
-          if (mnPermissions.export.data) {
-            mnPermissions.export.data = _.merge(mnPermissions.export.data, resp.data);
-          } else {
-            mnPermissions.export.data = resp.data;
-          }
-
-          if (mnPermissions.export.cluster) {
-            mnPermissions.export.cluster = _.merge(mnPermissions.export.cluster, rv.cluster);
-          } else {
-            mnPermissions.export.cluster = rv.cluster;
-          }
-
-          return mnPermissions.export;
         });
       }
     }

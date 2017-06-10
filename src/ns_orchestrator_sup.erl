@@ -27,7 +27,7 @@ init([]) ->
     {ok, {{rest_for_one, 3, 10}, child_specs()}}.
 
 child_specs() ->
-    [{ns_orchestrator, {ns_orchestrator, start_link, []},
-      permanent, 1000, worker, [ns_orchestrator]},
+    [{ns_orchestrator_child_sup, {ns_orchestrator_child_sup, start_link, []},
+      permanent, infinity, supervisor, [ns_orchestrator_child_sup]},
      {auto_failover, {auto_failover, start_link, []},
       permanent, 1000, worker, [auto_failover]}].

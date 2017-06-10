@@ -9,21 +9,11 @@
     var mnDocumentsListService = {
       getDocuments: getDocuments,
       getDocumentsListState: getDocumentsListState,
-      populateBucketsSelectBox: populateBucketsSelectBox
+      getDocumentsParams: getDocumentsParams,
+      getDocumentsURI: getDocumentsURI
     };
 
     return mnDocumentsListService;
-
-    function populateBucketsSelectBox(params) {
-      return mnBucketsService.getBucketsByType().then(function (buckets) {
-        var rv = {};
-        rv.bucketsNames =
-          buckets.byType.membase.names
-          .concat(buckets.byType.ephemeral.names);
-        rv.bucketsNames.selected = params.bucket;
-        return rv;
-      });
-    }
 
     function getListState(docs, params) {
       var rv = {};
@@ -35,30 +25,25 @@
 
       rv.docs = docs;
 
-      rv.pageLimits = [5, 10, 20, 50, 100];
+      rv.pageLimits = [10, 20, 50, 100];
       rv.pageLimits.selected = params.pageLimit;
       return rv;
     }
 
     function getDocumentsListState(params) {
-      params.pageLimit = params.pageLimit || 5;
       return getDocuments(params).then(function (resp) {
         return getListState(resp.data, params);
       }, function (resp) {
         switch (resp.status) {
-          case 404: return getEmptyListState(params, {data: {error: "bucket not found"}});
-          default: return getEmptyListState(params, resp);
+        case 0:
+        case -1: return $q.reject(resp);
+        case 404: return !params.bucket ? {status: "_404"} : resp;
+        default: return resp;
         }
       });
     }
 
-    function getEmptyListState(params, resp) {
-      var rv = getListState({rows: [], errors: [resp && resp.data]}, params);
-      rv.isEmptyState = true;
-      return rv;
-    }
-
-    function getDocuments(params) {
+    function getDocumentsParams(params) {
       var param;
       try {
         param = JSON.parse(params.documentsFilter) || {};
@@ -80,11 +65,18 @@
       if (param.endkey) {
         param.endkey = JSON.stringify(param.endkey);
       }
+      return param;
+    }
 
+    function getDocumentsURI(params) {
+      return "/pools/default/buckets/" + encodeURIComponent(params.bucket) + "/docs";
+    }
+
+    function getDocuments(params) {
       return $http({
         method: "GET",
-        url: "/pools/default/buckets/" + encodeURIComponent(params.bucket) + "/docs",
-        params: param
+        url: getDocumentsURI(params),
+        params: getDocumentsParams(params)
       });
     }
   }

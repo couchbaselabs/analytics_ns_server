@@ -75,14 +75,22 @@ split_fold_incremental_loop(Binary, CP, Len, Fun, Acc, Start) ->
     NewAcc = Fun(NewPiece, Acc),
     split_fold_incremental_loop(Binary, CP, Len, Fun, NewAcc, MatchPos + MatchLen).
 
+should_sanitize() ->
+    try
+        ns_config:read_key_fast(sanitize_backtrace_registers, true)
+    catch
+        error:badarg ->
+            false
+    end.
+
 -spec sanitize_backtrace(atom(), binary()) -> [binary()].
 sanitize_backtrace(Name, Backtrace) ->
     SanitizeRegisters =
-        case {Name, ns_config:read_key_fast(sanitize_backtrace_registers, true)} of
-            {auth, true} ->
-                true;
-            {memcached_passwords, true} ->
-                true;
+        case Name of
+            auth ->
+                should_sanitize();
+            memcached_passwords ->
+                should_sanitize();
             _ ->
                 false
         end,
@@ -290,7 +298,7 @@ collect_diag_per_node_binary_body(Reply) ->
                            Bucket <- PersistentBuckets]),
     Reply(ets_tables, (catch grab_all_ets_tables())),
     Reply(couchdb_ets_tables, (catch grab_couchdb_ets_tables())),
-    Reply(internal_settings, (catch menelaus_web:build_internal_settings_kvs())),
+    Reply(internal_settings, (catch menelaus_web_settings:build_kvs(internal))),
     Reply(logging, (catch ale:capture_logging_diagnostics())),
     Reply(system_info, (catch grab_system_info())).
 

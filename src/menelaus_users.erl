@@ -13,7 +13,7 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% @doc implementation of builtin and saslauthd users
+%% @doc implementation of local and external users
 
 -module(menelaus_users).
 
@@ -44,14 +44,22 @@
          empty_storage/0,
          upgrade_to_spock/2,
          config_upgrade/0,
-         upgrade_status/0]).
+         upgrade_status/0,
+         get_passwordless/0,
+         filter_out_invalid_roles/3,
+         cleanup_bucket_roles/1]).
 
 %% callbacks for replicated_dets
--export([init/1, on_save/2, on_empty/1]).
+-export([init/1, on_save/4, on_empty/1, handle_call/4]).
 
--export([start_storage/0, start_replicator/0]).
+-export([start_storage/0, start_replicator/0, start_auth_cache/0]).
+
+%% RPC'd from ns_couchdb node
+-export([get_auth_info_on_ns_server/1]).
 
 -define(MAX_USERS_ON_CE, 20).
+
+-record(state, {base, passwordless}).
 
 replicator_name() ->
     users_replicator.
@@ -62,6 +70,9 @@ storage_name() ->
 versions_name() ->
     menelaus_users_versions.
 
+auth_cache_name() ->
+    menelaus_users_cache.
+
 start_storage() ->
     Replicator = erlang:whereis(replicator_name()),
     Path = filename:join(path_config:component_path(data, "config"), "users.dets"),
@@ -69,12 +80,22 @@ start_storage() ->
     replicated_dets:start_link(?MODULE, [], storage_name(), Path, Replicator, CacheSize).
 
 get_users_version() ->
-    [{user_version, V, Base}] = ets:lookup(versions_name(), user_version),
-    {V, Base}.
+    case ns_node_disco:couchdb_node() == node() of
+        false ->
+            [{user_version, V, Base}] = ets:lookup(versions_name(), user_version),
+            {V, Base};
+        true ->
+            rpc:call(ns_node_disco:ns_server_node(), ?MODULE, get_users_version, [])
+    end.
 
 get_auth_version() ->
-    [{auth_version, V, Base}] = ets:lookup(versions_name(), auth_version),
-    {V, Base}.
+    case ns_node_disco:couchdb_node() == node() of
+        false ->
+            [{auth_version, V, Base}] = ets:lookup(versions_name(), auth_version),
+            {V, Base};
+        true ->
+            rpc:call(ns_node_disco:ns_server_node(), ?MODULE, get_auth_version, [])
+    end.
 
 start_replicator() ->
     GetRemoteNodes =
@@ -83,12 +104,28 @@ start_replicator() ->
         end,
     doc_replicator:start_link(replicated_dets, replicator_name(), GetRemoteNodes, storage_name()).
 
+start_auth_cache() ->
+    versioned_cache:start_link(
+      auth_cache_name(), 200,
+      fun (I) ->
+              ?log_debug("Retrieve user ~p from ns_server node", [I]),
+              rpc:call(ns_node_disco:ns_server_node(), ?MODULE, get_auth_info_on_ns_server, [I])
+      end,
+      fun () ->
+              dist_manager:wait_for_node(fun ns_node_disco:ns_server_node/0),
+              [{{user_storage_events, ns_node_disco:ns_server_node()}, fun (_) -> true end}]
+      end,
+      fun () -> {get_auth_version(), get_users_version()} end).
+
 empty_storage() ->
     replicated_dets:empty(storage_name()).
 
+get_passwordless() ->
+    gen_server:call(storage_name(), get_passwordless, infinity).
+
 init([]) ->
     _ = ets:new(versions_name(), [protected, named_table]),
-    init_versions().
+    #state{base = init_versions()}.
 
 init_versions() ->
     Base = crypto:rand_uniform(0, 16#100000000),
@@ -97,18 +134,56 @@ init_versions() ->
     gen_event:notify(user_storage_events, {auth_version, {0, Base}}),
     Base.
 
-on_save({user, _}, Base) ->
+on_save({user, _}, _Value, _Deleted, State = #state{base = Base}) ->
     Ver = ets:update_counter(versions_name(), user_version, 1),
     gen_event:notify(user_storage_events, {user_version, {Ver, Base}}),
-    Base;
-on_save({auth, _}, Base) ->
+    State;
+on_save({auth, Identity}, Value, Deleted, State = #state{base = Base}) ->
+    NewState = maybe_update_passwordless(Identity, Value, Deleted, State),
     Ver = ets:update_counter(versions_name(), auth_version, 1),
     gen_event:notify(user_storage_events, {auth_version, {Ver, Base}}),
-    Base.
+    NewState.
 
-on_empty(_Base) ->
+on_empty(_State) ->
     true = ets:delete_all_objects(versions_name()),
     init_versions().
+
+maybe_update_passwordless(_Identity, _Value, _Deleted, State = #state{passwordless = undefined}) ->
+    State;
+maybe_update_passwordless(Identity, _Value, true, State = #state{passwordless = Passwordless}) ->
+    State#state{passwordless = lists:delete(Identity, Passwordless)};
+maybe_update_passwordless(Identity, Auth, false, State = #state{passwordless = Passwordless}) ->
+    NewPasswordless =
+        case authenticate_with_info(Auth, "") of
+            true ->
+                case lists:member(Identity, Passwordless) of
+                    true ->
+                        Passwordless;
+                    false ->
+                        [Identity | Passwordless]
+                end;
+            false ->
+                lists:delete(Identity, Passwordless)
+        end,
+    State#state{passwordless = NewPasswordless}.
+
+handle_call(get_passwordless, _From, TableName, #state{passwordless = undefined} = State) ->
+    Passwordless =
+        pipes:run(
+          replicated_dets:select(TableName, {auth, '_'}, 100, true),
+          ?make_consumer(
+             pipes:fold(?producer(),
+                        fun ({{auth, Identity}, Auth}, Acc) ->
+                                case authenticate_with_info(Auth, "") of
+                                    true ->
+                                        [Identity | Acc];
+                                    false ->
+                                        Acc
+                                end
+                        end, []))),
+    {reply, Passwordless, State#state{passwordless = Passwordless}};
+handle_call(get_passwordless, _From, _TableName, #state{passwordless = Passwordless} = State) ->
+    {reply, Passwordless, State}.
 
 -spec get_users_45(ns_config()) -> [{rbac_identity(), []}].
 get_users_45(Config) ->
@@ -159,17 +234,18 @@ store_user(Identity, Name, Password, Roles) ->
             store_user_45(Identity, Props, Roles)
     end.
 
-store_user_45({_UserName, saslauthd} = Identity, Props, Roles) ->
+store_user_45({UserName, external}, Props, Roles) ->
     ns_config:run_txn(
       fun (Config, SetFn) ->
               case menelaus_roles:validate_roles(Roles, Config) of
-                  ok ->
+                  {_, []} ->
+                      Identity = {UserName, saslauthd},
                       Users = get_users_45(Config),
                       NewUsers = lists:keystore(Identity, 1, Users,
                                                 {Identity, [{roles, Roles} | Props]}),
                       {commit, SetFn(user_roles, NewUsers, Config)};
-                  Error ->
-                      {abort, Error}
+                  {_, BadRoles} ->
+                      {abort, {error, roles_validation, BadRoles}}
               end
       end).
 
@@ -194,14 +270,14 @@ check_limit(Identity) ->
             end
     end.
 
-store_user_spock({_UserName, Type} = Identity, Props, Password, Roles, Config) ->
+store_user_spock({_UserName, Domain} = Identity, Props, Password, Roles, Config) ->
     CurrentAuth = replicated_dets:get(storage_name(), {auth, Identity}),
     case check_limit(Identity) of
         true ->
-            case Type of
-                saslauthd ->
+            case Domain of
+                external ->
                     store_user_spock_with_auth(Identity, Props, same, Roles, Config);
-                builtin ->
+                local ->
                     case build_auth(CurrentAuth, Password) of
                         password_required ->
                             {abort, password_required};
@@ -215,11 +291,11 @@ store_user_spock({_UserName, Type} = Identity, Props, Password, Roles, Config) -
 
 store_user_spock_with_auth(Identity, Props, Auth, Roles, Config) ->
     case menelaus_roles:validate_roles(Roles, Config) of
-        ok ->
-            store_user_spock_validated(Identity, [{roles, Roles} | Props], Auth),
+        {NewRoles, []} ->
+            store_user_spock_validated(Identity, [{roles, NewRoles} | Props], Auth),
             {commit, ok};
-        Error ->
-            {abort, Error}
+        {_, BadRoles} ->
+            {abort, {error, roles_validation, BadRoles}}
     end.
 
 store_user_spock_validated(Identity, Props, Auth) ->
@@ -231,7 +307,7 @@ store_user_spock_validated(Identity, Props, Auth) ->
             ok = replicated_dets:set(storage_name(), {auth, Identity}, Auth)
     end.
 
-change_password({_UserName, builtin} = Identity, Password) when is_list(Password) ->
+change_password({_UserName, local} = Identity, Password) when is_list(Password) ->
     case replicated_dets:get(storage_name(), {user, Identity}) of
         false ->
             user_not_found;
@@ -266,11 +342,11 @@ delete_user_45(Identity) ->
               end
       end).
 
-delete_user_spock({_, Type} = Identity) ->
-    case Type of
-        builtin ->
+delete_user_spock({_, Domain} = Identity) ->
+    case Domain of
+        local ->
             _ = replicated_dets:delete(storage_name(), {auth, Identity});
-        saslauthd ->
+        external ->
             ok
     end,
     case replicated_dets:delete(storage_name(), {user, Identity}) of
@@ -292,53 +368,67 @@ has_scram_hashes(Auth) ->
 authenticate(Username, Password) ->
     case cluster_compat_mode:is_cluster_spock() of
         true ->
-            Identity = {Username, builtin},
-            case replicated_dets:get(storage_name(), {user, Identity}) of
+            Identity = {Username, local},
+            case get_auth_info(Identity) of
                 false ->
                     false;
-                _ ->
-                    case replicated_dets:get(storage_name(), {auth, Identity}) of
-                        false ->
-                            false;
-                        {_, Auth} ->
-                            {Salt, Mac} = get_salt_and_mac(Auth),
-                            ns_config_auth:hash_password(Salt, Password) =:= Mac
-                    end
+                Auth ->
+                    authenticate_with_info(Auth, Password)
             end;
         false ->
             false
     end.
 
--spec user_exists(rbac_identity()) -> boolean().
-user_exists(Identity) ->
+get_auth_info(Identity) ->
+    case ns_node_disco:couchdb_node() == node() of
+        false ->
+            get_auth_info_on_ns_server(Identity);
+        true ->
+            versioned_cache:get(auth_cache_name(), Identity)
+    end.
+
+get_auth_info_on_ns_server(Identity) ->
+    case replicated_dets:get(storage_name(), {user, Identity}) of
+        false ->
+            false;
+        _ ->
+            case replicated_dets:get(storage_name(), {auth, Identity}) of
+                false ->
+                    false;
+                {_, Auth} ->
+                    Auth
+            end
+    end.
+
+-spec authenticate_with_info(list(), rbac_password()) -> boolean().
+authenticate_with_info(Auth, Password) ->
+    {Salt, Mac} = get_salt_and_mac(Auth),
+    ns_config_auth:hash_password(Salt, Password) =:= Mac.
+
+get_user_props_45({User, external}) ->
+    ns_config:search_prop(ns_config:latest(), user_roles, {User, saslauthd}, []).
+
+get_user_props(Identity) ->
     case cluster_compat_mode:is_cluster_spock() of
         true ->
-            replicated_dets:get(storage_name(), {user, Identity}) =/= false;
+            replicated_dets:get(storage_name(), {user, Identity}, []);
         false ->
-            ns_config:search_prop(ns_config:latest(), user_roles, Identity) =/= undefined
+            get_user_props_45(Identity)
     end.
+
+-spec user_exists(rbac_identity()) -> boolean().
+user_exists(Identity) ->
+    get_user_props(Identity) =/= [].
 
 -spec get_roles(rbac_identity()) -> [rbac_role()].
 get_roles(Identity) ->
-    Props =
-        case cluster_compat_mode:is_cluster_spock() of
-            true ->
-                replicated_dets:get(storage_name(), {user, Identity}, []);
-            false ->
-                ns_config:search_prop(ns_config:latest(), user_roles, Identity, [])
-        end,
-    proplists:get_value(roles, Props, []).
+    proplists:get_value(roles, get_user_props(Identity), []).
 
 -spec get_user_name(rbac_identity()) -> rbac_user_name().
-get_user_name(Identity) ->
-    Props =
-        case cluster_compat_mode:is_cluster_spock() of
-            false ->
-                ns_config:search_prop(ns_config:latest(), user_roles, Identity, []);
-            true ->
-                replicated_dets:get(storage_name(), {user, Identity}, [])
-        end,
-    proplists:get_value(name, Props).
+get_user_name({_, Domain} = Identity) when Domain =:= local orelse Domain =:= external ->
+    proplists:get_value(name, get_user_props(Identity));
+get_user_name(_) ->
+    undefined.
 
 collect_result(Port, Acc) ->
     receive
@@ -354,9 +444,9 @@ build_memcached_auth_info(UserPasswords) ->
     lists:foreach(
       fun ({User, Password}) ->
               PasswordStr = User ++ " " ++ Password ++ "\n",
-              Port ! {self(), {command, list_to_binary(PasswordStr)}}
+              ok = goport:write(Port, PasswordStr)
       end, UserPasswords),
-    Port ! {self(), {command, <<"\n">>}},
+    ok = goport:close(Port, stdin),
     {0, Json} = collect_result(Port, []),
     {[{<<"users">>, Infos}]} = ejson:decode(Json),
     Infos.
@@ -466,7 +556,13 @@ do_upgrade_to_spock(Nodes, Repair) ->
             ok
     end,
     Config = ns_config:get(),
-    {AdminName, _} = ns_config_auth:get_creds(Config, admin),
+    AdminName =
+        case ns_config_auth:get_creds(Config, admin) of
+            undefined ->
+                undefined;
+            {AN, _} ->
+                AN
+        end,
 
     case ns_config_auth:get_creds(Config, ro_admin) of
         undefined ->
@@ -474,7 +570,7 @@ do_upgrade_to_spock(Nodes, Repair) ->
         {ROAdmin, {Salt, Mac}} ->
             Auth = build_plain_memcached_auth_info(Salt, Mac),
             {commit, ok} =
-                store_user_spock_with_auth({ROAdmin, builtin}, [{name, "Read Only User"}],
+                store_user_spock_with_auth({ROAdmin, local}, [{name, "Read Only User"}],
                                            Auth, [ro_admin], Config)
     end,
 
@@ -484,15 +580,21 @@ do_upgrade_to_spock(Nodes, Repair) ->
                            [AdminName]);
           ({BucketName, BucketConfig}) ->
               Password = proplists:get_value(sasl_password, BucketConfig, ""),
+              UUID = proplists:get_value(uuid, BucketConfig),
               Name = "Generated user for bucket " ++ BucketName,
-              {commit, ok} = store_user_spock({BucketName, builtin}, [{name, Name}], Password,
-                                              [{bucket_sasl, [BucketName]}], Config)
+              ok = store_user_spock_validated(
+                     {BucketName, local},
+                     [{name, Name}, {roles, [{bucket_full_access, [{BucketName, UUID}]}]}],
+                     build_memcached_auth(Password))
       end, ns_bucket:get_buckets(Config)),
 
     LdapUsers = get_users_45(Config),
     lists:foreach(
-      fun ({{_, saslauthd} = Identity, Props}) ->
-              ok = store_user_spock_validated(Identity, Props, same)
+      fun ({{LdapUser, saslauthd}, Props}) ->
+              Roles = proplists:get_value(roles, Props),
+              {ValidatedRoles, _} = menelaus_roles:validate_roles(Roles, Config),
+              NewProps = lists:keystore(roles, 1, Props, {roles, ValidatedRoles}),
+              ok = store_user_spock_validated({LdapUser, external}, NewProps, same)
       end, LdapUsers).
 
 config_upgrade() ->
@@ -500,3 +602,34 @@ config_upgrade() ->
 
 upgrade_status() ->
     ns_config:read_key_fast(users_upgrade, undefined).
+
+filter_out_invalid_roles(Props, Definitions, AllPossibleValues) ->
+    Roles = proplists:get_value(roles, Props, []),
+    FilteredRoles = menelaus_roles:filter_out_invalid_roles(Roles, Definitions, AllPossibleValues),
+    lists:keystore(roles, 1, Props, {roles, FilteredRoles}).
+
+cleanup_bucket_roles(BucketName) ->
+    ?log_debug("Delete all roles for bucket ~p", [BucketName]),
+    Buckets = lists:keydelete(BucketName, 1, ns_bucket:get_buckets()),
+    Definitions = menelaus_roles:get_definitions(),
+    AllPossibleValues = menelaus_roles:calculate_possible_param_values(Buckets),
+
+    UpdateFun =
+        fun ({user, Key}, Props) ->
+                case menelaus_users:filter_out_invalid_roles(Props, Definitions,
+                                                             AllPossibleValues) of
+                    Props ->
+                        skip;
+                    NewProps ->
+                        ?log_debug("Changing properties of ~p from ~p to ~p due to deletion of ~p",
+                                   [Key, Props, NewProps, BucketName]),
+                        {update, NewProps}
+                end
+        end,
+    case replicated_dets:select_with_update(storage_name(), {user, '_'}, 100, UpdateFun) of
+        [] ->
+            ok;
+        Errors ->
+            ?log_warning("Failed to cleanup some roles: ~p", [Errors]),
+            ok
+    end.

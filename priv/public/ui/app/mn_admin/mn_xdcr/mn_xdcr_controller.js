@@ -4,16 +4,16 @@
   angular.module('mnXDCR', [
     'mnXDCRService',
     'mnHelper',
-    'mnBucketsService',
     'mnPromiseHelper',
     'mnPoll',
     'mnAutocompleteOff',
-    'mnRegex',
     'mnPoolDefault',
-    'mnSpinner'
+    'mnPools',
+    'mnSpinner',
+    "ui.codemirror"
   ]).controller('mnXDCRController', mnXDCRController);
 
-  function mnXDCRController($scope, permissions, $uibModal, mnHelper, mnPoller, mnPoolDefault, mnXDCRService, mnTasksDetails, mnBucketsService, mnPromiseHelper) {
+  function mnXDCRController($scope, permissions, $uibModal, mnHelper, mnPoller, mnPoolDefault, mnXDCRService, mnTasksDetails, mnPromiseHelper) {
     var vm = this;
 
     vm.mnPoolDefault = mnPoolDefault.latestValue();
@@ -34,11 +34,8 @@
     vm.status = status;
 
     function to(row) {
-      if (!vm.references) {
-        return;
-      }
       var uuid = row.id.split("/")[0];
-      var clusters = vm.references.byUUID;
+      var clusters = vm.references ? vm.references.byUUID : {};
       var toName = !clusters[uuid] ? "unknown" : !clusters[uuid].deleted ? clusters[uuid].name : ('at ' + cluster[uuid].hostname);
       return 'bucket "' + row.target.split('buckets/')[1] + '" on cluster "' + toName + '"';
     }
@@ -113,7 +110,6 @@
         templateUrl: 'app/mn_admin/mn_xdcr/create_dialog/mn_xdcr_create_dialog.html',
         scope: $scope,
         resolve: {
-          buckets: mnHelper.wrapInFunction(mnBucketsService.getBucketsByType()),
           replicationSettings: mnHelper.wrapInFunction(mnXDCRService.getReplicationSettings())
         }
       });

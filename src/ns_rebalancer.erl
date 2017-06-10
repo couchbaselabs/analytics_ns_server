@@ -630,6 +630,7 @@ rebalance(KeepNodes, EjectNodesAll, FailedNodesAll,
           DeltaNodes, DeltaRecoveryBuckets) ->
     ok = drop_old_2i_indexes(KeepNodes),
     ok = apply_delta_recovery_buckets(DeltaRecoveryBuckets, DeltaNodes, BucketConfigs),
+    ok = maybe_clear_full_recovery_type(KeepNodes),
 
     ok = service_janitor:cleanup(),
 
@@ -1170,7 +1171,7 @@ apply_delta_recovery_buckets(DeltaRecoveryBuckets, DeltaNodes, CurrentBuckets) -
                    [{Bucket, BucketConfig} ||
                        {Bucket, BucketConfig, _} <- DeltaRecoveryBuckets]),
     NodeChanges = [[{{node, N, recovery_type}, none},
-                    {{node, N, failover_vbuckets}, undefined},
+                    {{node, N, failover_vbuckets}, []},
                     {{node, N, membership}, active}] || N <- DeltaNodes],
     BucketChanges = {buckets, [{configs, NewBuckets}]},
 
@@ -1191,6 +1192,13 @@ apply_delta_recovery_buckets(DeltaRecoveryBuckets, DeltaNodes, CurrentBuckets) -
 
     ok.
 
+maybe_clear_full_recovery_type(Nodes) ->
+    Cfg = ns_config:latest(),
+    NodeChanges = [[{{node, N, recovery_type}, none},
+                    {{node, N, failover_vbuckets}, []}]
+                   || N <- Nodes,
+                      ns_cluster_membership:get_recovery_type(Cfg, N) =:= full],
+    ok = ns_config:set(lists:flatten(NodeChanges)).
 
 wait_for_bucket(Bucket, Nodes) ->
     ?log_debug("Waiting until bucket ~p gets ready on nodes ~p", [Bucket, Nodes]),
@@ -1333,10 +1341,15 @@ do_run_graceful_failover_moves(Node, BucketName, BucketConfig, I, N) ->
               ProgressFun, Map, Map1).
 
 check_graceful_failover_possible(Node, BucketsAll) ->
-    case check_graceful_failover_possible_rec(Node, BucketsAll) of
-        false -> false;
-        [] -> false;
-        [_|_] -> true
+    Services = ns_cluster_membership:node_services(Node),
+    case lists:member(kv, Services) of
+        true ->
+            case check_graceful_failover_possible_rec(Node, BucketsAll) of
+                false -> false;
+                _ -> true
+            end;
+        false ->
+            false
     end.
 
 check_graceful_failover_possible_rec(_Node, []) ->

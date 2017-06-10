@@ -63,9 +63,6 @@
 -export([handle_streaming_wakeup/4,
          handle_pool_info_wait_wake/4]).
 
-%% for /diag
--export([build_internal_settings_kvs/0]).
-
 -import(menelaus_util,
         [redirect_permanently/2,
          bin_concat_path/1,
@@ -369,6 +366,8 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                     {{[settings], read}, fun handle_settings_stats/1};
                 ["settings", "autoFailover"] ->
                     {{[settings], read}, fun handle_settings_auto_failover/1};
+                ["settings", "autoReprovision"] ->
+                    {{[settings], read}, fun handle_settings_auto_reprovision/1};
                 ["settings", "maxParallelIndexers"] ->
                     {{[indexes], read}, fun handle_settings_max_parallel_indexers/1};
                 ["settings", "viewUpdateDaemon"] ->
@@ -400,16 +399,22 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                      fun menelaus_web_rbac:handle_get_roles/1};
                 ["settings", "rbac", "users"] ->
                     {{[admin, security], read},
-                     fun menelaus_web_rbac:handle_get_users/1};
-                ["settings", "rbac", "users", Type] ->
+                     fun menelaus_web_rbac:handle_get_users/2, [Path]};
+                ["settings", "rbac", "users", Domain] ->
                     {{[admin, security], read},
-                     fun menelaus_web_rbac:handle_get_users/2, [Type]};
+                     fun menelaus_web_rbac:handle_get_users/3, [Path, Domain]};
+                ["settings", "rbac", "users", Domain, UserId] ->
+                    {{[admin, security], read},
+                     fun menelaus_web_rbac:handle_get_user/3, [Domain, UserId]};
                 ["settings", "passwordPolicy"] ->
                     {{[admin, security], read},
                      fun menelaus_web_rbac:handle_get_password_policy/1};
+                ["settings", "security"] ->
+                    {{[admin, security], read},
+                     fun menelaus_web_settings:handle_get/2, [security]};
                 ["internalSettings"] ->
                     {{[admin, settings], read},
-                     fun handle_internal_settings/1};
+                     fun menelaus_web_settings:handle_get/2, [internal]};
                 ["nodes", NodeId] ->
                     {{[nodes], read}, fun handle_node/2, [NodeId]};
                 ["nodes", "self", "xdcrSSLPorts"] ->
@@ -523,6 +528,10 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                     {{[settings], write}, fun handle_settings_auto_failover_post/1};
                 ["settings", "autoFailover", "resetCount"] ->
                     {{[settings], write}, fun handle_settings_auto_failover_reset_count/1};
+                ["settings", "autoReprovision"] ->
+                    {{[settings], write}, fun handle_settings_auto_reprovision_post/1};
+                ["settings", "autoReprovision", "resetCount"] ->
+                    {{[settings], write}, fun handle_settings_auto_reprovision_reset_count/1};
                 ["settings", "maxParallelIndexers"] ->
                     {{[indexes], write}, fun handle_settings_max_parallel_indexers_post/1};
                 ["settings", "viewUpdateDaemon"] ->
@@ -550,12 +559,15 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                 ["settings", "passwordPolicy"] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_post_password_policy/1};
+                ["settings", "security"] ->
+                    {{[admin, security], write},
+                     fun menelaus_web_settings:handle_post/2, [security]};
                 ["validateCredentials"] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_validate_saslauthd_creds_post/1};
                 ["internalSettings"] ->
                     {{[admin, settings], write},
-                     fun handle_internal_settings_post/1};
+                     fun menelaus_web_settings:handle_post/2, [internal]};
                 ["pools", "default"] ->
                     {{[pools], write}, fun handle_pool_settings_post/1};
                 ["controller", "ejectNode"] ->
@@ -763,9 +775,9 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                 ["settings", "rbac", "users", UserId] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_delete_user/3, ["external", UserId]};
-                ["settings", "rbac", "users", Type, UserId] ->
+                ["settings", "rbac", "users", Domain, UserId] ->
                     {{[admin, security], write},
-                     fun menelaus_web_rbac:handle_delete_user/3, [Type, UserId]};
+                     fun menelaus_web_rbac:handle_delete_user/3, [Domain, UserId]};
                 ["couchBase" | _] -> {no_check,
                                       fun menelaus_pluggable_ui:proxy_req/4,
                                       ["couchBase",
@@ -800,9 +812,9 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                 ["settings", "rbac", "users", UserId] ->
                     {{[admin, security], write},
                      fun menelaus_web_rbac:handle_put_user/3, ["external", UserId]};
-                ["settings", "rbac", "users", Type, UserId] ->
+                ["settings", "rbac", "users", Domain, UserId] ->
                     {{[admin, security], write},
-                     fun menelaus_web_rbac:handle_put_user/3, [Type, UserId]};
+                     fun menelaus_web_rbac:handle_put_user/3, [Domain, UserId]};
                 ["couchBase" | _] ->
                     {no_check, fun menelaus_pluggable_ui:proxy_req/4,
                      ["couchBase",
@@ -830,15 +842,19 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
             {done, reply_text(Req, "Method Not Allowed", 405)}
     end.
 
-serve_ui(Req, false, F, Args) ->
-    case ns_config:read_key_fast(disable_ui_over_http, false) of
+serve_ui(Req, IsSSL, F, Args) ->
+    IsDisabledKey = case IsSSL of
+                        true ->
+                            disable_ui_over_https;
+                        false ->
+                            disable_ui_over_http
+                    end,
+    case ns_config:read_key_fast(IsDisabledKey, false) of
         true ->
             reply(Req, 404);
         false ->
-            serve_ui(Req, true, F, Args)
-    end;
-serve_ui(Req, true, F, Args) ->
-    apply(F, Args ++ [Req]).
+            apply(F, Args ++ [Req])
+    end.
 
 use_minified(Req) ->
     Query = Req:parse_qs(),
@@ -939,12 +955,7 @@ handle_uilogin(Req) ->
     Params = Req:parse_post(),
     User = proplists:get_value("user", Params),
     Password = proplists:get_value("password", Params),
-    case menelaus_auth:verify_login_creds(User, Password) of
-        {ok, Identity} ->
-            menelaus_auth:complete_uilogin(Req, Identity);
-        false ->
-            menelaus_auth:reject_uilogin(Req, {User, rejected})
-    end.
+    menelaus_auth:uilogin(Req, User, Password).
 
 handle_uilogout(Req) ->
     case menelaus_auth:extract_ui_auth_token(Req) of
@@ -2493,6 +2504,87 @@ handle_settings_auto_failover_reset_count(Req) ->
     ns_audit:reset_auto_failover_count(Req),
     reply(Req, 200).
 
+maybe_handle_auto_reprovision_request(Req, Body) ->
+    case cluster_compat_mode:is_cluster_spock() of
+        true ->
+            Body();
+        false ->
+            Msg = <<"auto-reprovision is enabled in cluster versions spock and above">>,
+            reply_text(Req, Msg, 400)
+    end.
+
+%% @doc Settings to en-/disable auto-reprovision
+handle_settings_auto_reprovision(Req) ->
+    maybe_handle_auto_reprovision_request(
+      Req, fun() ->
+                   Config = build_settings_auto_reprovision(),
+                   Enabled = proplists:get_value(enabled, Config),
+                   MaxNodes = proplists:get_value(max_nodes, Config),
+                   Count = proplists:get_value(count, Config),
+                   reply_json(Req, {struct, [{enabled, Enabled},
+                                             {max_nodes, MaxNodes},
+                                             {count, Count}]})
+           end).
+
+build_settings_auto_reprovision() ->
+    {value, Config} = ns_config:search(ns_config:get(), auto_reprovision_cfg),
+    Config.
+
+handle_settings_auto_reprovision_post(Req) ->
+    maybe_handle_auto_reprovision_request(
+      Req, fun() ->
+                   PostArgs = Req:parse_post(),
+                   ValidateOnly = proplists:get_value("just_validate", Req:parse_qs()) =:= "1",
+                   Enabled = proplists:get_value("enabled", PostArgs),
+                   MaxNodes = proplists:get_value("maxNodes", PostArgs),
+                   case {ValidateOnly,
+                         validate_settings_auto_reprovision(Enabled, MaxNodes)} of
+                       {false, [true, MaxNodes2]} ->
+                           auto_reprovision:enable(MaxNodes2),
+                           reply(Req, 200);
+                       {false, false} ->
+                           auto_reprovision:disable(),
+                           reply(Req, 200);
+                       {false, {error, Errors}} ->
+                           Errors2 = [<<Msg/binary, "\n">> || {_, Msg} <- Errors],
+                           reply_text(Req, Errors2, 400);
+                       {true, {error, Errors}} ->
+                           reply_json(Req, {struct, [{errors, {struct, Errors}}]}, 200);
+                                                % Validation only and no errors
+                       {true, _}->
+                           reply_json(Req, {struct, [{errors, null}]}, 200)
+                   end
+           end).
+
+validate_settings_auto_reprovision(Enabled, MaxNodes) ->
+    Enabled2 = case Enabled of
+        "true" -> true;
+        "false" -> false;
+        _ -> {enabled, <<"The value of \"enabled\" must be true or false">>}
+    end,
+    case Enabled2 of
+        true ->
+            case is_valid_positive_integer(MaxNodes) of
+                true ->
+                    [Enabled2, list_to_integer(MaxNodes)];
+                false ->
+                    {error, [{maxNodes,
+                              <<"The value of \"maxNodes\" must be a positive integer">>}]}
+            end;
+        false ->
+            Enabled2;
+        Error ->
+            {error, [Error]}
+    end.
+
+%% @doc Resets the number of nodes that were automatically reprovisioned to zero
+handle_settings_auto_reprovision_reset_count(Req) ->
+    maybe_handle_auto_reprovision_request(
+      Req, fun() ->
+                   auto_reprovision:reset_count(),
+                   reply(Req, 200)
+           end).
+
 maybe_cleanup_old_buckets() ->
     case ns_config_auth:is_system_provisioned() of
         true ->
@@ -3586,124 +3678,6 @@ handle_settings_auto_compaction(Req) ->
             {purgeInterval, compaction_api:get_purge_interval(global)}],
     reply_json(Req, {struct, JSON}, 200).
 
-internal_settings_conf() ->
-    GetBool = fun (SV) ->
-                      case SV of
-                          "true" -> {ok, true};
-                          "false" -> {ok, false};
-                          _ -> invalid
-                      end
-              end,
-
-    GetNumber = fun (Min, Max) ->
-                        fun (SV) ->
-                                parse_validate_number(SV, Min, Max)
-                        end
-                end,
-    GetNumberOrEmpty = fun (Min, Max, Empty) ->
-                               fun (SV) ->
-                                       case SV of
-                                           "" -> Empty;
-                                           _ ->
-                                               parse_validate_number(SV, Min, Max)
-                                       end
-                               end
-                       end,
-    GetString = fun (SV) ->
-                        {ok, list_to_binary(string:strip(SV))}
-                end,
-
-    [{index_aware_rebalance_disabled, indexAwareRebalanceDisabled, false, GetBool},
-     {rebalance_index_waiting_disabled, rebalanceIndexWaitingDisabled, false, GetBool},
-     {index_pausing_disabled, rebalanceIndexPausingDisabled, false, GetBool},
-     {rebalance_ignore_view_compactions, rebalanceIgnoreViewCompactions, false, GetBool},
-     {rebalance_moves_per_node, rebalanceMovesPerNode, 1, GetNumber(1, 1024)},
-     {rebalance_moves_before_compaction, rebalanceMovesBeforeCompaction, 64, GetNumber(1, 1024)},
-     {{couchdb, max_parallel_indexers}, maxParallelIndexers, <<>>, GetNumber(1, 1024)},
-     {{couchdb, max_parallel_replica_indexers}, maxParallelReplicaIndexers, <<>>, GetNumber(1, 1024)},
-     {max_bucket_count, maxBucketCount, 10, GetNumber(1, 8192)},
-     {{request_limit, rest}, restRequestLimit, undefined, GetNumberOrEmpty(0, 99999, {ok, undefined})},
-     {{request_limit, capi}, capiRequestLimit, undefined, GetNumberOrEmpty(0, 99999, {ok, undefined})},
-     {drop_request_memory_threshold_mib, dropRequestMemoryThresholdMiB, undefined,
-      GetNumberOrEmpty(0, 99999, {ok, undefined})},
-     {gotraceback, gotraceback, <<"crash">>, GetString},
-     {{auto_failover_disabled, index}, indexAutoFailoverDisabled, true, GetBool},
-     {{cert, use_sha1}, certUseSha1, false, GetBool}] ++
-        case cluster_compat_mode:is_goxdcr_enabled() of
-            false ->
-                [{{xdcr, max_concurrent_reps}, xdcrMaxConcurrentReps, 32, GetNumber(1, 256)},
-                 {{xdcr, checkpoint_interval}, xdcrCheckpointInterval, 1800, GetNumber(60, 14400)},
-                 {{xdcr, worker_batch_size}, xdcrWorkerBatchSize, 500, GetNumber(500, 10000)},
-                 {{xdcr, doc_batch_size_kb}, xdcrDocBatchSizeKb, 2048, GetNumber(10, 100000)},
-                 {{xdcr, failure_restart_interval}, xdcrFailureRestartInterval, 30, GetNumber(1, 300)},
-                 {{xdcr, optimistic_replication_threshold}, xdcrOptimisticReplicationThreshold, 256,
-                  GetNumberOrEmpty(0, 20*1024*1024, undefined)},
-                 {xdcr_anticipatory_delay, xdcrAnticipatoryDelay, 0, GetNumber(0, 99999)}];
-            true ->
-                []
-        end.
-
-build_internal_settings_kvs() ->
-    Conf = internal_settings_conf(),
-    [{JK, case ns_config:read_key_fast(CK, DV) of
-              undefined ->
-                  DV;
-              V ->
-                  V
-          end}
-     || {CK, JK, DV, _} <- Conf].
-
-handle_internal_settings(Req) ->
-    InternalSettings = lists:filter(
-                         fun ({_, undefined}) ->
-                                 false;
-                             (_) ->
-                                 true
-                         end, build_internal_settings_kvs()),
-    reply_json(Req, {InternalSettings}).
-
-handle_internal_settings_post(Req) ->
-    Conf = [{CK, atom_to_list(JK), JK, Parser} ||
-               {CK, JK, _, Parser} <- internal_settings_conf()],
-    Params = Req:parse_post(),
-    CurrentValues = build_internal_settings_kvs(),
-    {ToSet, Errors} =
-        lists:foldl(
-          fun ({SJK, SV}, {ListToSet, ListErrors}) ->
-                  case lists:keyfind(SJK, 2, Conf) of
-                      {CK, SJK, JK, Parser} ->
-                          case Parser(SV) of
-                              {ok, V} ->
-                                  case proplists:get_value(JK, CurrentValues) of
-                                      V ->
-                                          {ListToSet, ListErrors};
-                                      _ ->
-                                          {[{CK, V} | ListToSet], ListErrors}
-                                  end;
-                              _ ->
-                                  {ListToSet,
-                                   [iolist_to_binary(io_lib:format("~s is invalid", [SJK])) | ListErrors]}
-                          end;
-                      false ->
-                          {ListToSet,
-                           [iolist_to_binary(io_lib:format("Unknown key ~s", [SJK])) | ListErrors]}
-                  end
-          end, {[], []}, Params),
-
-    case Errors of
-        [] ->
-            case ToSet of
-                [] ->
-                    ok;
-                _ ->
-                    ns_config:set(ToSet),
-                    ns_audit:internal_settings(Req, ToSet)
-            end,
-            reply_json(Req, []);
-        _ ->
-            reply_json(Req, {[{error, X} || X <- Errors]}, 400)
-    end.
-
 handle_node_rename(Req) ->
     Params = Req:parse_post(),
     Node = node(),
@@ -3716,6 +3690,8 @@ handle_node_rename(Req) ->
                 case ns_cluster:change_address(Hostname) of
                     ok ->
                         ns_audit:rename_node(Req, Node, Hostname),
+                        ok;
+                    not_renamed ->
                         ok;
                     {cannot_resolve, Errno} ->
                         Msg = io_lib:format("Could not resolve the hostname: ~p", [Errno]),

@@ -1,25 +1,44 @@
 <mn-element-cargo depot="actions">
-  <a href=""
-     ng-show="viewsListCtl.showViewCreationButtons() && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
-     ng-click="viewsListCtl.showSpatialCreationDialog()">
-    ADD SPATIAL VIEW
-  </a>
-  <a href=""
-     ng-click="viewsListCtl.showMapreduceCreationDialog()"
-     ng-show="viewsListCtl.showViewCreationButtons() && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write">
-    ADD VIEW
-  </a>
+  <div class="header-controls">
+    <a
+       ng-show="viewsListCtl.showViewCreationButtons() && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write"
+       ng-click="viewsListCtl.showSpatialCreationDialog()">
+      ADD SPATIAL VIEW
+    </a>
+    <a
+       ng-click="viewsListCtl.showMapreduceCreationDialog()"
+       ng-show="viewsListCtl.showViewCreationButtons() && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">
+      ADD VIEW
+    </a>
+  </div>
 </mn-element-cargo>
 
-<div ng-if="!rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected] || rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.read">
+<mn-element-cargo depot="alerts">
+  <div
+     ng-if="viewsListCtl.ddocs.status && rbac.bucketNames['.views!read'].length"
+     ng-switch="viewsListCtl.ddocs.status"
+     class="interim alert alert-warning">
+    <p ng-switch-when="_404">Bucket name should be specified.</p>
+    <p ng-switch-when="400">Error 400: Either this bucket is not Couchbase bucket or is hosted on another node.</p>
+    <p ng-switch-when="404">Error 404: This bucket does not exist.</p>
+    <p ng-switch-when="403">Error 403: You do not have the necessary permissions to see views in this bucket.</p>
+    <p ng-switch-default>Unexpected Error</p>
+  </div>
+</mn-element-cargo>
+
+<div>
   <div class="row">
     <ui-select
-       ng-model="viewsCtl.state.bucketsNames.selected"
+       ng-model="viewsCtl.currentBucketName"
        on-select="viewsCtl.onSelectBucket($item)"
        theme="selectize"
+       ng-disabled="!rbac.bucketNames['.views!read'].length"
        class="inline">
-      <ui-select-match>{{$select.selected}}</ui-select-match>
-      <ui-select-choices repeat="name in viewsCtl.state.bucketsNames | filter: $select.search">
+      <ui-select-match
+         class="ui-select-match">{{$select.selected}}</ui-select-match>
+      <ui-select-choices
+         class="ui-select-choices"
+         repeat="name in rbac.bucketNames['.views!read'] | filter: $select.search">
         <span class="select-item ellipsis" ng-bind-html="name | highlight: $select.search" ></span>
       </ui-select-choices>
     </ui-select>
@@ -31,30 +50,49 @@
          ui-sref="{ type: 'production' }"
          ui-sref-active="selected">Production Views</a>
       <span
-         class="label red badge"
-         ng-show="viewsListCtl.ddocs.production.length && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.read">{{viewsListCtl.ddocs.production.length}}
+         class="label badge red-3"
+         ng-show="viewsListCtl.ddocs.production.length">{{viewsListCtl.ddocs.production.length}}
       </span>
     </span>
   </div>
 
   <div mn-spinner="viewsListCtl.showViewsPollerSpinner">
     <div class="cbui-table">
+      <div
+         class="zero-content"
+         ng-show="viewsListCtl.ddocs.status === '_404' && !rbac.bucketNames['.views!read'].length">
+        There are currently no Couchbase buckets and no views to show.
+        <span ng-show="rbac.cluster.buckets.create">
+          Go to <a ui-sref="app.admin.buckets">Buckets</a> to add one,
+          or load a <a ui-sref="app.admin.settings.sampleBuckets">sample bucket</a> with data & indexes.
+        </span>
+      </div>
 
-      <div class="zero-content" ng-if="!viewsCtl.state.bucketsNames.selected && !viewsListCtl.ddocs.ddocsAreInFactMissing">
-        No buckets currently defined! Go to <a ui-sref="app.admin.buckets">Data Buckets</a> to create some.
-      </div>
-      <div class="zero-content" ng-if="viewsListCtl.ddocs.ddocsAreInFactMissing">
-        This node doesn't host the current bucket. For a list of design docs, please open the web console on a different node.
-      </div>
-      <div class="zero-content" ng-if="viewsCtl.state.bucketsNames.selected && !viewsListCtl.ddocs.ddocsAreInFactMissing && !viewsListCtl.ddocs[viewsListCtl.type].length">
-        <span ng-show="viewsListCtl.isDevelopmentViews">There are currently no design documents in development. <span class="when-roadmin-avoid-me">Click "Create View" above to create one.</span></span>
-        <span ng-show="!viewsListCtl.isDevelopmentViews">There are no design documents currently published. <span class="when-roadmin-avoid-me">Please visit "Development Views" to create one.</span></span>
+      <div
+         class="zero-content"
+         ng-show="!viewsListCtl.ddocs.status && rbac.bucketNames['.views!read'].length && !viewsListCtl.ddocs[viewsListCtl.type].length">
+        <span ng-show="viewsListCtl.isDevelopmentViews">
+          There are currently no design documents in development.
+          <span
+             class="when-roadmin-avoid-me"
+             ng-show="rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">
+            Use ADD VIEW above to create one.
+          </span>
+        </span>
+        <span ng-show="!viewsListCtl.isDevelopmentViews">
+          There are no design documents currently published.
+          <span
+             class="when-roadmin-avoid-me"
+             ng-show="rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">
+            Go to Development Views to create one.
+          </span>
+        </span>
       </div>
 
       <div
          ng-repeat-start="row in viewsListCtl.ddocs[viewsListCtl.type] | orderBy:'hostname' track by row.doc.meta.id"
          ng-if="viewsListCtl.ddocs.rows.length">
-        <hr class="margin-bottom-half margin-top1">
+        <hr class="margin-bottom-half margin-top-1">
         <div class="cbui-tablerow">
           <span class="cbui-table-cell flex-grow-2 cbui-tablerow-title">
             {{row.doc.meta.id}}
@@ -70,28 +108,28 @@
           <span class="cbui-table-cell flex-grow-2 wrap text-right">
             <button
                class="outline tight"
-               ng-show="rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
+               ng-show="rbac.cluster.bucket[viewsCtl.currentBucketName].views.write"
                ng-click="viewsListCtl.showDdocDeletionDialog(row.doc)">Delete</button>
             <button
                class="outline tight"
                ng-disabled="(('isEmpty' | lodash:row.doc.json.views) && ('isEmpty' | lodash:row.doc.json.spatial)) || !!(viewsListCtl.tasks[row.doc.meta.id][0].type === 'view_compaction') || !!viewsListCtl.getStartedCompactions()[row.controllers.compact]"
-               ng-show="rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.compact"
+               ng-show="rbac.cluster.bucket[viewsCtl.currentBucketName].views.compact"
                ng-click="viewsListCtl.registerCompactionAsTriggeredAndPost(row)">Compact</button>
             <button
                class="outline tight"
                ng-click="viewsListCtl.showCreationDialog(row.doc)"
-               ng-show="viewsListCtl.showCreationButton(row) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write">Add View</button>
+               ng-show="viewsListCtl.showCreationButton(row) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">Add View</button>
             <button
                class="outline tight"
                ng-click="viewsListCtl.showCreationDialog(row.doc, true)"
-               ng-show="viewsListCtl.showSpatialButton(row) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write">Add Spatial View</button>
+               ng-show="viewsListCtl.showSpatialButton(row) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">Add Spatial View</button>
             <button
-               ng-show="!viewsListCtl.isDevelopmentViews && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
+               ng-show="!viewsListCtl.isDevelopmentViews && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write"
                ng-click="viewsListCtl.copyToDev(row.doc)">Copy to Dev</button>
             <button
                ng-disabled="('isEmpty' | lodash:row.doc.json.views) && ('isEmpty' | lodash:row.doc.json.spatial)"
                ng-click="viewsListCtl.publishDdoc(row.doc)"
-               ng-show="viewsListCtl.showPublishButton(row) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write">Publish</button>
+               ng-show="viewsListCtl.showPublishButton(row) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write">Publish</button>
             <div
                class="error"
                ng-show="viewsListCtl.showMatchingWarning(row)">
@@ -116,16 +154,15 @@
         <span class="cbui-table-cell flex-grow-2 wrap text-right">
           <button
              class="outline tight"
-             ng-show="viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
+             ng-show="viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write"
              ng-click="$event.stopPropagation() || viewsListCtl.showViewDeletionDialog(row.doc, key)">
             Delete
           </button>
           <button
              class="outline tight"
-             ng-show="rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
              ng-click="$event.stopPropagation()"
              ui-sref=".editing.result(viewsListCtl.getInitialViewsFilterParams(key, row, false))">
-            {{viewsListCtl.isDevModeDoc(row.doc.meta.id) ? 'Edit' : 'Show' }}
+            {{viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write ? 'Edit' : 'Show' }}
           </button>
         </span>
       </div>
@@ -139,15 +176,14 @@
         <span class="cbui-table-cell flex-grow-3 text-right">
           <button
              class="outline tight"
-             ng-show="viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write"
+             ng-show="viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write"
              ng-click="$event.stopPropagation() || viewsListCtl.showViewDeletionDialog(row.doc, key, true)">
             Delete
           </button>
           <button
              ng-click="$event.stopPropagation()"
-             ng-show="rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.read"
              ui-sref=".editing.result(viewsListCtl.getInitialViewsFilterParams(key, row, true))">
-            {{viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.state.bucketsNames.selected].views.write ? 'Edit' : 'Show' }}
+            {{viewsListCtl.isDevModeDoc(row.doc.meta.id) && rbac.cluster.bucket[viewsCtl.currentBucketName].views.write ? 'Edit' : 'Show' }}
            </button>
         </span>
       </div>

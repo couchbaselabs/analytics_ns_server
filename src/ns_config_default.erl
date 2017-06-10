@@ -189,6 +189,12 @@ default() ->
      {{node, node(), indexer_http_port},
       misc:get_env_default(indexer_http_port, 9102)},
 
+     {{node, node(), indexer_https_port},
+            case IsEnterprise of
+                true -> misc:get_env_default(indexer_https_port, 19102);
+                _ -> undefined
+            end},
+
      {{node, node(), indexer_stinit_port},
       misc:get_env_default(indexer_stinit_port, 9103)},
 
@@ -309,7 +315,7 @@ default() ->
            {static_config_string, "vb0=true"}]}]},
        {config_path, path_config:default_memcached_config_path()},
        {audit_file, ns_audit_cfg:default_audit_json_path()},
-       {rbac_file, filename:join(DataDir, "memcached.rbac")},
+       {rbac_file, filename:join(path_config:component_path(data, "config"), "memcached.rbac")},
        {log_path, LogDir},
        %% Prefix of the log files within the log path that should be rotated.
        {log_prefix, "memcached.log"},
@@ -432,6 +438,15 @@ default() ->
                           {max_nodes, 1},
                           % count is the number of nodes that were auto-failovered
                           {count, 0}]},
+     % auto-reprovision (mostly applicable to ephemeral buckets) is the operation that
+     % is carried out when memcached process on a node restarts within the auto-failover
+     % timeout.
+     {auto_reprovision_cfg, [{enabled, true},
+                             % max_nodes is the maximum number of nodes that may be
+                             % automatically reprovisioned
+                             {max_nodes, 1},
+                             % count is the number of nodes that were auto-reprovisioned
+                             {count, 0}]},
 
      %% everything is unlimited by default
      {{request_limit, rest}, undefined},

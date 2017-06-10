@@ -14,7 +14,6 @@
 
 <div class="row flex-right margin-bottom-half">
   <a
-     href=""
      class="margin-right-1"
      ng-show="!groupsCtl.disableApplyChangesBtn"
      ng-click="groupsCtl.reloadState('app.admin.servers.list.groups')"
@@ -31,14 +30,13 @@
   </span>
 </div>
 
-<div mn-spinner="viewLoading" class="margin-bottom2">
+<div mn-spinner="viewLoading" class="margin-bottom-2">
   <div
      ng-repeat="group in groupsCtl.state.groups | orderBy:'name'"
-     class="margin-bottom1">
+     class="margin-bottom-1">
     <div class="cbui-table-header flex-left">
       <h4 class="ellipsis">{{group.name}}&nbsp;
         <a
-           href=""
            class="text-smaller"
            ng-show="rbac.cluster.server_groups.write"
            ng-click="groupsCtl.createGroup(group)"
@@ -57,18 +55,18 @@
       <span class="cbui-table-cell">
         {{server.hostname | mnStripPortHTML:group.nodes}}
       </span>
-      <span class="cbui-table-cell flex-grow-3">
+      <span class="cbui-table-cell flex-grow-1-5">
         <span
            ng-repeat="service in server.services | mnFormatServicesArray | orderBy"
            class="label neutral">{{service}}
         </span>
       </span>
-      <span class="cbui-table-cell wrap flex-grow-3 text-right">
-        <div uib-dropdown ng-show="!server.toGroupPending">
+      <span class="cbui-table-cell wrap flex-grow-1-5 text-right">
+        <div uib-dropdown ng-show="!server.toGroupPending && groupsCtl.state.groups.length > 1">
           <div uib-dropdown-toggle class="menu-toggle">move to <span class="icon fa-caret-down"></span></div>
           <div uib-dropdown-menu class="dropdown-menu-select-like">
             <a
-               href=""
+               ng-show="groupNew.name !== group.name"
                ng-repeat="groupNew in groupsCtl.state.groups | orderBy:'name'"
                ng-click="groupsCtl.changeNodeGroup(group.name, groupNew.name, server)">{{groupNew.name}}</a>
           </div>
@@ -79,7 +77,6 @@
             pending move to {{server.toGroupPending}}
           </span>
           <a
-             href=""
              class="indent-1"
              ng-click="groupsCtl.changeNodeGroup(server.toGroupPending, group.name, server)">
             cancel
@@ -92,7 +89,6 @@
     <div ng-show="!group.nodes.length" class="zero-content">
       This group is empty.
       <a
-         href=""
          ng-click="groupsCtl.deleteGroup(group)"
          class="indent-1">
         delete group

@@ -54,7 +54,6 @@ init([]) ->
           child_specs()}}.
 
 pre_start() ->
-    misc:make_pidfile(),
     misc:ping_jointo().
 
 child_specs() ->
@@ -77,10 +76,6 @@ child_specs() ->
 
      {ns_crash_log_consumer, {ns_log, start_link_crash_consumer, []},
       {permanent, 4}, 1000, worker, []},
-
-     {users_sup,
-      {users_sup, start_link, []},
-      permanent, infinity, supervisor, []},
 
      {memcached_passwords, {memcached_passwords, start_link, []},
       permanent, 1000, worker, []},

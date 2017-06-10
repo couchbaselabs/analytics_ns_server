@@ -9,7 +9,6 @@
     var mnBucketsStats = {
       get: get,
       clearCache: clearCache,
-      getFresh: getFresh
     };
 
     return mnBucketsStats;
@@ -26,10 +25,6 @@
     function clearCache() {
       $cacheFactory.get('$http').remove('/pools/default/buckets?basic_stats=true&skipMap=true');
       return this;
-    }
-
-    function getFresh(mnHttpParams) {
-      return mnBucketsStats.clearCache().get(mnHttpParams);
     }
   }
 })();

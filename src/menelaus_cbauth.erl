@@ -84,6 +84,7 @@ is_interesting({rest_creds, _}) -> true;
 is_interesting({cluster_compat_version, _}) -> true;
 is_interesting({{node, _, is_enterprise}, _}) -> true;
 is_interesting({user_roles, _}) -> true;
+is_interesting({buckets, _}) -> true;
 is_interesting(_) -> false.
 
 handle_call(_Msg, _From, State) ->
@@ -231,13 +232,15 @@ build_auth_info(#state{cert_version = CertVersion}) ->
      {certVersion, CertVersion}].
 
 auth_version(Config) ->
-    erlang:phash2([ns_config_auth:get_creds(Config, admin),
-                   menelaus_users:get_auth_version()]).
+    B = term_to_binary(
+          [ns_config_auth:get_creds(Config, admin),
+           menelaus_users:get_auth_version()]),
+    base64:encode(crypto:hash(sha, B)).
 
 handle_cbauth_post(Req) ->
-    {User, Source} = menelaus_auth:get_identity(Req),
+    {User, Domain} = menelaus_auth:get_identity(Req),
     menelaus_util:reply_json(Req, {[{user, erlang:list_to_binary(User)},
-                                    {source, Source}]}).
+                                    {domain, Domain}]}).
 
 is_cbauth_connection(Label) ->
     lists:suffix("-cbauth", Label).

@@ -26,9 +26,9 @@
 -type rbac_user_id() :: string().
 -type rbac_password() :: string().
 -type rbac_identity_type() :: rejected | wrong_token | anonymous | admin | ro_admin | bucket |
-                              saslauthd | builtin | local_token.
+                              external | local | local_token.
 -type rbac_identity() :: {rbac_user_id(), rbac_identity_type()}.
--type rbac_role_param() :: string() | any.
+-type rbac_role_param() :: string() | {string(), binary()} | any.
 -type rbac_role_name() :: atom().
 -type rbac_role() :: rbac_role_name() | {rbac_role_name(), nonempty_list(rbac_role_param())}.
 -type rbac_user_name() :: string() | undefined.
@@ -49,8 +49,8 @@
                                     rbac_permission_pattern_operations()}.
 -type rbac_compiled_role() :: [rbac_permission_pattern()].
 
--type rbac_role_params() :: [{name | desc, binary()}].
--type rbac_role_def() :: {rbac_role_name(), [atom()], rbac_role_params(),
+-type rbac_role_props() :: [{name | desc, binary()}].
+-type rbac_role_def() :: {rbac_role_name(), [atom()], rbac_role_props(),
                           nonempty_list(rbac_permission_pattern_raw())}.
 
 -type rbac_permission_vertex_param() :: string() | any.
@@ -58,5 +58,6 @@
 -type rbac_permission_object() :: [rbac_permission_vertex(), ...].
 -type rbac_permission_operations() :: rbac_operation() | [rbac_operation(), ...].
 -type rbac_permission() :: {rbac_permission_object(), rbac_permission_operations()}.
+-type rbac_all_param_values() :: [{[atom()], [[rbac_role_param()]]}].
 
 -endif.

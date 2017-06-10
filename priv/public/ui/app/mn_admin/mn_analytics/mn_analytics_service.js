@@ -50,7 +50,7 @@
       for (var kind in stats) {
         var newSamples = restoreOpsBlock(prevStats[kind],
                                          stats[kind],
-                                         value.samplesCount);
+                                         value.samplesCount + 1);
         stats[kind] = newSamples;
       }
       return value;
@@ -62,7 +62,7 @@
           return !(node.clusterMembership === 'inactiveFailed') && !(node.status === 'unhealthy');
         }).pluck("hostname").value();
         rv.nodesNames.unshift("All Server Nodes (" + rv.nodesNames.length + ")");
-        rv.nodesNames.selected = params.statsHostname || rv.nodesNames[0];
+        rv.nodesNames.selected = params.statsHostname === "all" ? rv.nodesNames[0] : params.statsHostname;
         return rv;
       });
     }
@@ -82,9 +82,10 @@
         });
       }, function (resp) {
         switch (resp.status) {
-          case 0:
-          case -1: return $q.reject(resp);
-          default: return $q.when({isEmptyState: true});
+        case 0:
+        case -1: return $q.reject(resp);
+        case 404: return !params.$stateParams.bucket ? {status: "_404"} : resp;
+        default: return resp;
         }
       });
     }
@@ -96,9 +97,11 @@
       if (params.$stateParams.specificStat) {
         reqParams.statName = params.$stateParams.specificStat;
       } else {
-        reqParams.node = params.$stateParams.statsHostname;
+        if (params.$stateParams.statsHostname !== "all") {
+          reqParams.node = params.$stateParams.statsHostname;
+        }
       }
-      if (params.previousResult && !params.previousResult.isEmptyState) {
+      if (params.previousResult && !params.previousResult.status) {
         reqParams.haveTStamp = params.previousResult.stats.lastTStamp;
       }
       return $http({
@@ -119,7 +122,7 @@
       var statDesc = mnCloneOnlyDataFilter(data[1].data);
       var samples = {};
       var rv = {};
-      if (params.previousResult && !params.previousResult.isEmptyState) {
+      if (params.previousResult && !params.previousResult.status) {
         stats = maybeApplyDelta(params.previousResult.stats, stats);
       }
 
@@ -162,6 +165,7 @@
       });
 
       rv.isSpecificStats = !!params.$stateParams.specificStat;
+      rv.specificStat = params.$stateParams.specificStat;
 
       rv.statsByName = statsByName;
       rv.statsDirectoryBlocks = statDesc.blocks;

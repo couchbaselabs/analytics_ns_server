@@ -50,7 +50,8 @@
          handle_ddocs_list/3,
          handle_set_ddoc_update_min_changes/4,
          handle_local_random_key/3,
-         build_bucket_capabilities/1]).
+         build_bucket_capabilities/1,
+         external_bucket_type/1]).
 
 -import(menelaus_util,
         [reply/2,
@@ -63,7 +64,6 @@
          bin_concat_path/2]).
 
 -define(MAX_BUCKET_NAME_LEN, 100).
--define(DEFAULT_EPHEMERAL_PURGE_INTERVAL, 3).
 
 checking_bucket_uuid(Req, BucketConfig, Body) ->
     ReqUUID0 = proplists:get_value("bucket_uuid", Req:parse_qs()),
@@ -1078,7 +1078,7 @@ parse_validate_bucket_purge_interval(Params, "ephemeral", IsNew) ->
             Val = menelaus_web:parse_validate_purge_interval(Params),
             case Val =:= [] andalso IsNew =:= true of
                 true ->
-                    [{ok, purge_interval, ?DEFAULT_EPHEMERAL_PURGE_INTERVAL}];
+                    [{ok, purge_interval, ?DEFAULT_EPHEMERAL_PURGE_INTERVAL_DAYS}];
                 false ->
                     Val
             end

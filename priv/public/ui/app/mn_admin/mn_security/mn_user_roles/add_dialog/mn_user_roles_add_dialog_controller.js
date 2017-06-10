@@ -5,9 +5,9 @@
     .module("mnUserRoles")
     .controller("mnUserRolesAddDialogController", mnUserRolesAddDialogController);
 
-  function mnUserRolesAddDialogController($scope, mnUserRolesService, $uibModalInstance, mnPromiseHelper, user, isLdapEnabled, buckets) {
+  function mnUserRolesAddDialogController($scope, mnUserRolesService, $uibModalInstance, mnPromiseHelper, user, isLdapEnabled) {
     var vm = this;
-    vm.user = _.clone(user) || {type: "builtin"};
+    vm.user = _.clone(user) || {domain: "local"};
     vm.userID = vm.user.id || 'New';
     vm.roles = [];
     vm.save = save;
@@ -40,38 +40,26 @@
 
     function onCheckChange(role, id) {
       if (role.bucket_name === "*") {
-        buckets.byType.names.forEach(function (name) {
+        $scope.buckets.details.byType.names.forEach(function (name) {
           vm.selectedRoles[role.role + "[" + name + "]"] = vm.selectedRoles[id];
         });
       }
 
-      if (role.role === "admin" || role.role === "cluster_admin") {
-        vm.roles.forEach(function (role1) {
-          if (role1.role !== "admin" ) {
+      var containsSelected = {};
+
+      vm.roles.forEach(function (role1) {
+        if (role.role === "admin" || role.role === "cluster_admin") {
+          if (role1.role !== "admin") {
             vm.selectedRoles[getUIID(role1, 2)] = vm.selectedRoles[id];
           }
-          maybeContainsSelected(role1.role, role1.bucket_name);
-        });
-      } else {
-        if (role.bucket_name) {
-          buckets.byType.names.concat("*").some(function (name) {
-            return maybeContainsSelected(role.role, name);
-          });
-        } else {
-          maybeContainsSelected(role.role);
         }
-      }
-    }
+        if (vm.selectedRoles[getUIID(role1, 2)]) {
+          containsSelected[role1.role + "_wrapper"] = true;
+          containsSelected[role1.role.split("_")[0] + "_wrapper"] = true;
+        }
+      });
 
-    function maybeContainsSelected(role, bucketName) {
-      if (vm.selectedRoles[role + (bucketName ? "[" + bucketName + "]" : "")]) {
-        vm.containsSelected[role + "_wrapper"] = true;
-        vm.containsSelected[role.split("_")[0] + "_wrapper"] = true;
-        return true;
-      } else {
-        vm.containsSelected[role + "_wrapper"] = false;
-        vm.containsSelected[role.split("_")[0] + "_wrapper"] = false;
-      }
+      vm.containsSelected = containsSelected;
     }
 
     function activate() {

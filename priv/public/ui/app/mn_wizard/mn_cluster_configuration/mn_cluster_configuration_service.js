@@ -67,7 +67,6 @@
     function postEmail(register) {
       var params = _.clone(register);
       delete params.agree;
-      params.callback = 'JSON_CALLBACK';
 
       return $http({
         method: 'JSONP',
@@ -110,6 +109,7 @@
         newConfig.indexMemoryQuota = selfConfig.indexMemoryQuota;
         newConfig.ftsMemoryQuota = selfConfig.ftsMemoryQuota;
         newConfig.cbasMemoryQuota = selfConfig.cbasMemoryQuota;
+        newConfig.calculateTotal = true;
 
         rv.startNewClusterConfig = newConfig;
         rv.hostname = selfConfig.hostname;

@@ -27,8 +27,9 @@
          handle_saslauthd_auth_settings_post/1,
          handle_validate_saslauthd_creds_post/1,
          handle_get_roles/1,
-         handle_get_users/1,
          handle_get_users/2,
+         handle_get_users/3,
+         handle_get_user/3,
          handle_whoami/1,
          handle_put_user/3,
          handle_delete_user/3,
@@ -144,11 +145,11 @@ handle_validate_saslauthd_creds_post(Req) ->
 
     {Role, Src} =
         case VRV of
-            {ok, {_, saslauthd}} -> {saslauthd_auth:get_role_pre_45(User), saslauthd};
+            {ok, {_, external}} -> {saslauthd_auth:get_role_pre_45(User), saslauthd};
             {ok, {_, R}} -> {R, builtin};
             {error, Error} ->
                 erlang:throw({web_exception, 400, Error, []});
-            false -> {false, builtin}
+            _ -> {false, builtin}
         end,
     JRole = case Role of
                 admin ->
@@ -164,12 +165,15 @@ role_to_json(Name) when is_atom(Name) ->
     [{role, Name}];
 role_to_json({Name, [any]}) ->
     [{role, Name}, {bucket_name, <<"*">>}];
+role_to_json({Name, [{BucketName, _Id}]}) ->
+    [{role, Name}, {bucket_name, list_to_binary(BucketName)}];
 role_to_json({Name, [BucketName]}) ->
     [{role, Name}, {bucket_name, list_to_binary(BucketName)}].
 
-filter_roles(_Config, undefined, Roles) ->
+filter_roles_by_permission(_Config, undefined, Roles) ->
     Roles;
-filter_roles(Config, RawPermission, Roles) ->
+filter_roles_by_permission(Config, RawPermission, Roles) ->
+    AllValues = menelaus_roles:calculate_possible_param_values(ns_bucket:get_buckets(Config)),
     case parse_permission(RawPermission) of
         error ->
             error;
@@ -177,7 +181,7 @@ filter_roles(Config, RawPermission, Roles) ->
             lists:filtermap(
               fun ({Role, _} = RoleInfo) ->
                       Definitions = menelaus_roles:get_definitions(Config),
-                      [CompiledRole] = menelaus_roles:compile_roles([Role], Definitions),
+                      [CompiledRole] = menelaus_roles:compile_roles([Role], Definitions, AllValues),
                       case menelaus_roles:is_allowed(Permission, [CompiledRole]) of
                           true ->
                               {true, RoleInfo};
@@ -204,7 +208,7 @@ handle_get_roles(Req) ->
 
     Config = ns_config:get(),
     Roles = menelaus_roles:get_all_assignable_roles(Config),
-    case filter_roles(Config, Permission, Roles) of
+    case filter_roles_by_permission(Config, Permission, Roles) of
         error ->
             menelaus_util:reply_json(Req, <<"Malformed permission.">>, 400);
         FilteredRoles ->
@@ -212,68 +216,101 @@ handle_get_roles(Req) ->
             menelaus_util:reply_json(Req, Json)
     end.
 
-get_user_json(Identity, Props) ->
+get_user_json(Identity, Props, Passwordless) ->
     Roles = proplists:get_value(roles, Props, []),
     Name = proplists:get_value(name, Props),
-    get_user_json(Identity, Name, Roles).
+    get_user_json(Identity, Name, Passwordless, Roles).
 
-get_user_json({Id, Type}, Name, Roles) ->
-    TypeForREST =
-        case Type of
-            saslauthd ->
-                external;
-            _ ->
-                Type
-        end,
+get_user_json({Id, Domain}, Name, Passwordless, Roles) ->
     UserJson = [{id, list_to_binary(Id)},
-                {type, TypeForREST},
+                {domain, Domain},
                 {roles, [{role_to_json(Role)} || Role <- Roles]}],
-    {case Name of
-         undefined ->
-             UserJson;
-         _ ->
-             [{name, list_to_binary(Name)} | UserJson]
-     end}.
+    UserJson1 =
+        case Name of
+            undefined ->
+                UserJson;
+            _ ->
+                [{name, list_to_binary(Name)} | UserJson]
+        end,
+    UserJson2 =
+        case Passwordless of
+            false ->
+                UserJson1;
+            _ ->
+                [{passwordless, true} | UserJson1]
+        end,
+    {UserJson2}.
 
-handle_get_users(Req) ->
+handle_get_users(Path, Req) ->
     assert_api_can_be_used(),
 
     case cluster_compat_mode:is_cluster_spock() of
         true ->
-            handle_get_all_users(Req, '_');
+            handle_get_users_with_domain(Req, '_', Path);
         false ->
             handle_get_users_45(Req)
     end.
 
-validate_get_users(Args) ->
+validate_get_users(Args, DomainAtom, HasStartFrom) ->
     R1 = menelaus_util:validate_integer(pageSize, {Args, [], []}),
     R2 = menelaus_util:validate_range(pageSize, ?MIN_USERS_PAGE_SIZE, ?MAX_USERS_PAGE_SIZE, R1),
-    R3 = menelaus_util:validate_any_value(startAfter, R2),
-    menelaus_util:validate_unsupported_params(R3).
+    R3 = menelaus_util:validate_any_value(startFrom, R2),
+    R4 =
+        case HasStartFrom of
+            false ->
+                R3;
+            true ->
+                case DomainAtom of
+                    '_' ->
+                        R4_1 = menelaus_util:validate_required(startFromDomain, R3),
+                        R4_2 = menelaus_util:validate_any_value(startFromDomain, R4_1),
+                        menelaus_util:validate_by_fun(
+                          fun (Value) ->
+                                  case domain_to_atom(Value) of
+                                      unknown ->
+                                          {error, "Unknown user domain"};
+                                      Atom ->
+                                          {value, Atom}
+                                  end
+                          end, startFromDomain, R4_2);
+                    _ ->
+                        R4_1 = menelaus_util:validate_prohibited(startFromDomain, R3),
+                        menelaus_util:return_value(startFromDomain, DomainAtom, R4_1)
+                end
+        end,
+    menelaus_util:validate_unsupported_params(R4).
 
-handle_get_users(Type, Req) ->
+handle_get_users(Path, Domain, Req) ->
     menelaus_web:assert_is_spock(),
 
-    case type_to_atom(Type) of
+    case domain_to_atom(Domain) of
         unknown ->
-            menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
-        TypeAtom ->
-            handle_get_users_with_type(Req, TypeAtom)
+            menelaus_util:reply_json(Req, <<"Unknown user domain.">>, 404);
+        DomainAtom ->
+            handle_get_users_with_domain(Req, DomainAtom, Path)
     end.
 
-handle_get_users_with_type(Req, TypeAtom) ->
+handle_get_users_with_domain(Req, DomainAtom, Path) ->
     Query = Req:parse_qs(),
 
     case lists:keyfind("pageSize", 1, Query) of
         false ->
-            handle_get_all_users(Req, {'_', TypeAtom});
+            handle_get_all_users(Req, {'_', DomainAtom});
         _ ->
+            HasStartFrom = lists:keyfind("startFrom", 1, Query) =/= false,
             menelaus_util:execute_if_validated(
               fun (Values) ->
-                      handle_get_users_page(Req, {'_', TypeAtom},
+                      Start =
+                          case proplists:get_value(startFrom, Values) of
+                              undefined ->
+                                  undefined;
+                              U ->
+                                  {U, proplists:get_value(startFromDomain, Values)}
+                          end,
+                      handle_get_users_page(Req, DomainAtom, Path,
                                             proplists:get_value(pageSize, Values),
-                                            proplists:get_value(startAfter, Values))
-              end, Req, validate_get_users(Query))
+                                            Start)
+              end, Req, validate_get_users(Query, DomainAtom, HasStartFrom))
     end.
 
 handle_get_users_45(Req) ->
@@ -281,76 +318,240 @@ handle_get_users_45(Req) ->
     Json = lists:map(
              fun ({Identity, Props}) ->
                      Roles = proplists:get_value(roles, Props, []),
-                     get_user_json(Identity, proplists:get_value(name, Props), Roles)
+                     get_user_json(Identity, proplists:get_value(name, Props), false, Roles)
              end, Users),
     menelaus_util:reply_json(Req, Json).
 
 handle_get_all_users(Req, Pattern) ->
+    Passwordless = menelaus_users:get_passwordless(),
     pipes:run(menelaus_users:select_users(Pattern),
-              [jsonify_users(),
+              [filter_out_invalid_roles(),
+               jsonify_users(Passwordless),
                sjson:encode_extended_json([{compact, false},
                                            {strict, false}]),
                pipes:simple_buffer(2048)],
               menelaus_util:send_chunked(Req, 200, [{"Content-Type", "application/json"}])).
 
-jsonify_users() ->
+handle_get_user(Domain, UserId, Req) ->
+    menelaus_web:assert_is_spock(),
+    case domain_to_atom(Domain) of
+        unknown ->
+            menelaus_util:reply_json(Req, <<"Unknown user domain.">>, 404);
+        DomainAtom ->
+            Identity = {UserId, DomainAtom},
+            case menelaus_users:user_exists(Identity) of
+                false ->
+                    menelaus_util:reply_json(Req, <<"Unknown user.">>, 404);
+                true ->
+                    menelaus_util:reply_json(Req, get_user_json(Identity))
+            end
+    end.
+
+filter_out_invalid_roles() ->
+    Definitions = menelaus_roles:get_definitions(),
+    AllPossibleValues = menelaus_roles:calculate_possible_param_values(ns_bucket:get_buckets()),
+    ?make_transducer(
+       begin
+           pipes:foreach(
+             ?producer(),
+             fun ({Key, Props}) ->
+                     NewProps =
+                         menelaus_users:filter_out_invalid_roles(Props, Definitions,
+                                                                 AllPossibleValues),
+                     ?yield({Key, NewProps})
+             end)
+       end).
+
+jsonify_users(Passwordless) ->
     ?make_transducer(
        begin
            ?yield(array_start),
            pipes:foreach(?producer(),
                          fun ({{user, Identity}, Props}) ->
-                                 ?yield({json, get_user_json(Identity, Props)})
+                                 ?yield({json, get_user_json(Identity, Props,
+                                                             lists:member(Identity, Passwordless))})
                          end),
            ?yield(array_end)
        end).
 
-more_fun({{A, _}, _}, {{B, _}, _}) ->
-    A > B.
+-record(skew, {skew, size, less_fun, filter, skipped = 0}).
 
-add_to_skew(El, Skew, PageSize) ->
-    Skew1 = couch_skew:in(El, fun more_fun/2, Skew),
-    case couch_skew:size(Skew1) > PageSize of
-        true ->
-            {_, S} = couch_skew:out(fun more_fun/2, Skew1),
-            S;
+add_to_skew(_El, undefined) ->
+    undefined;
+add_to_skew(El, #skew{skew = CouchSkew,
+                      size = Size,
+                      filter = Filter,
+                      less_fun = LessFun,
+                      skipped = Skipped} = Skew) ->
+    case Filter(El, LessFun) of
         false ->
-            Skew1
+            Skew#skew{skipped = Skipped + 1};
+        true ->
+            CouchSkew1 = couch_skew:in(El, LessFun, CouchSkew),
+            case couch_skew:size(CouchSkew1) > Size of
+                true ->
+                    {_, CouchSkew2} = couch_skew:out(LessFun, CouchSkew1),
+                    Skew#skew{skew = CouchSkew2};
+                false ->
+                    Skew#skew{skew = CouchSkew1}
+            end
     end.
 
-skew_to_list(Skew, Acc) ->
-    case couch_skew:size(Skew) of
+skew_to_list(#skew{skew = CouchSkew,
+                   less_fun = LessFun}) ->
+    skew_to_list(CouchSkew, LessFun, []).
+
+skew_to_list(CouchSkew, LessFun, Acc) ->
+    case couch_skew:size(CouchSkew) of
         0 ->
             Acc;
         _ ->
-            {El, NewSkew} = couch_skew:out(fun more_fun/2, Skew),
-            skew_to_list(NewSkew, [El | Acc])
+            {El, NewSkew} = couch_skew:out(LessFun, CouchSkew),
+            skew_to_list(NewSkew, LessFun, [El | Acc])
     end.
 
-handle_get_users_page(Req, Pattern, PageSize, After) ->
-    {PageSkew, Skipped, Total} =
-        pipes:run(menelaus_users:select_users(Pattern),
+skew_size(#skew{skew = CouchSkew}) ->
+    couch_skew:size(CouchSkew).
+
+skew_out(#skew{skew = CouchSkew, less_fun = LessFun} = Skew) ->
+    {El, NewCouchSkew} = couch_skew:out(LessFun, CouchSkew),
+    {El, Skew#skew{skew = NewCouchSkew}}.
+
+skew_min(undefined) ->
+    undefined;
+skew_min(#skew{skew = CouchSkew}) ->
+    case couch_skew:size(CouchSkew) of
+        0 ->
+            undefined;
+        _ ->
+            couch_skew:min(CouchSkew)
+    end.
+
+skew_skipped(#skew{skipped = Skipped}) ->
+    Skipped.
+
+create_skews(Start, PageSize) ->
+    SkewThis =
+        #skew{
+           skew = couch_skew:new(),
+           size = PageSize + 1,
+           less_fun = fun ({A, _}, {B, _}) ->
+                              A >= B
+                      end,
+           filter = fun (El, LessFun) ->
+                            Start =:= undefined orelse LessFun(El, {Start, x})
+                    end},
+    SkewPrev =
+        case Start of
+            undefined ->
+                undefined;
+            _ ->
+                #skew{
+                   skew = couch_skew:new(),
+                   size = PageSize,
+                   less_fun = fun ({A, _}, {B, _}) ->
+                                      A < B
+                              end,
+                   filter = fun (El, LessFun) ->
+                                    LessFun(El, {Start, x})
+                            end}
+        end,
+    SkewLast =
+        #skew{
+           skew = couch_skew:new(),
+           size = PageSize,
+           less_fun = fun ({A, _}, {B, _}) ->
+                              A < B
+                      end,
+           filter = fun (_El, _LessFun) ->
+                            true
+                    end},
+    [SkewPrev, SkewThis, SkewLast].
+
+add_to_skews(El, Skews) ->
+    [add_to_skew(El, Skew) || Skew <- Skews].
+
+build_link(Name, noparams, PageSize, _DomainAtom, Path) ->
+    {Name, iolist_to_binary(
+             io_lib:format("/~s?pageSize=~p", [Path, PageSize]))};
+build_link(Name, {User, Domain}, PageSize, '_', Path) ->
+    {Name, iolist_to_binary(
+             io_lib:format("/~s?startFrom=~s&startFromDomain=~p&pageSize=~p",
+                           [Path, User, Domain, PageSize]))};
+build_link(Name, {User, _Domain}, PageSize, _DomainAtom, Path) ->
+    {Name, iolist_to_binary(
+             io_lib:format("/~s?startFrom=~s&pageSize=~p", [Path, User, PageSize]))}.
+
+seed_links(Pairs) ->
+    [{Name, {http_uri:encode(User), Domain}} || {Name, {User, Domain}} <- Pairs].
+
+build_links(Links, PageSize, DomainAtom, Path) ->
+    {links, {[build_link(Name, Identity, PageSize, DomainAtom, Path) || {Name, Identity} <- Links]}}.
+
+json_from_skews([SkewPrev, SkewThis, SkewLast], PageSize, UserJson) ->
+    {Users, Next} =
+        case skew_size(SkewThis) of
+            Size when Size =:= PageSize + 1 ->
+                {{N, _}, NewSkew} = skew_out(SkewThis),
+                {skew_to_list(NewSkew), N};
+            _ ->
+                {skew_to_list(SkewThis), undefined}
+        end,
+    {First, Prev} = case skew_min(SkewPrev) of
+                        undefined ->
+                            {undefined, undefined};
+                        {P, _} ->
+                            {noparams, P}
+                    end,
+    {Last, CorrectedNext} =
+        case Next of
+            undefined ->
+                {undefined, Next};
+            _ ->
+                case skew_min(SkewLast) of
+                    {L, _} when L < Next ->
+                        {L, L};
+                    {L, _} ->
+                        {L, Next}
+                end
+        end,
+    {[{skipped, skew_skipped(SkewThis)}, {users, [UserJson(El) || El <- Users]}],
+     seed_links([{first, First}, {prev, Prev}, {next, CorrectedNext}, {last, Last}])}.
+
+handle_get_users_page(Req, DomainAtom, Path, PageSize, Start) ->
+    Passwordless = menelaus_users:get_passwordless(),
+    {PageSkews, Total} =
+        pipes:run(menelaus_users:select_users({'_', DomainAtom}),
+                  filter_out_invalid_roles(),
                   ?make_consumer(
                      pipes:fold(
                        ?producer(),
-                       fun ({{user, {UserName, _}}, _}, {Skew, S, T})
-                             when After =/= undefined andalso UserName =< After ->
-                               {Skew, S + 1, T + 1};
-                           ({{user, Identity}, Props}, {Skew, S, T}) ->
-                               {add_to_skew({Identity, Props}, Skew, PageSize), S, T + 1}
-                       end, {couch_skew:new(), 0, 0}))),
+                       fun ({{user, Identity}, Props}, {Skews, T}) ->
+                               {add_to_skews({Identity, Props}, Skews), T + 1}
+                       end, {create_skews(Start, PageSize), 0}))),
+    UserJson =
+        fun ({Identity, Props}) ->
+                get_user_json(Identity, Props, lists:member(Identity, Passwordless))
+        end,
 
-    Json =
-        {[{skipped, Skipped},
-          {total, Total},
-          {users, [get_user_json(Identity, Props) ||
-                      {Identity, Props} <- skew_to_list(PageSkew, [])]}]},
+    {JsonFromSkews, Links} = json_from_skews(PageSkews, PageSize, UserJson),
+
+    Json = {[{total, Total} | [build_links(Links, PageSize, DomainAtom, Path) | JsonFromSkews]]},
     menelaus_util:reply_ok(Req, "application/json", misc:ejson_encode_pretty(Json)).
 
 handle_whoami(Req) ->
     Identity = menelaus_auth:get_identity(Req),
-    Roles = menelaus_roles:get_roles(Identity),
+    menelaus_util:reply_json(Req, get_user_json(Identity)).
+
+get_user_json(Identity) ->
+    Passwordless = menelaus_users:get_passwordless(),
+    Definitions = menelaus_roles:get_definitions(),
+    AllPossibleValues = menelaus_roles:calculate_possible_param_values(ns_bucket:get_buckets()),
+
+    Roles = menelaus_roles:filter_out_invalid_roles(
+              menelaus_roles:get_roles(Identity), Definitions, AllPossibleValues),
     Name = menelaus_users:get_user_name(Identity),
-    menelaus_util:reply_json(Req, get_user_json(Identity, Name, Roles)).
+    get_user_json(Identity, Name, lists:member(Identity, Passwordless), Roles).
 
 parse_until(Str, Delimeters) ->
     lists:splitwith(fun (Char) ->
@@ -386,28 +587,24 @@ role_to_string(Role) when is_atom(Role) ->
     atom_to_list(Role);
 role_to_string({Role, [any]}) ->
     lists:flatten(io_lib:format("~p[*]", [Role]));
+role_to_string({Role, [{BucketName, _}]}) ->
+    role_to_string({Role, [BucketName]});
 role_to_string({Role, [BucketName]}) ->
     lists:flatten(io_lib:format("~p[~s]", [Role, BucketName])).
-
-parse_roles_test() ->
-    Res = parse_roles("admin, bucket_admin[test.test], bucket_admin[*], no_such_atom, bucket_admin[default"),
-    ?assertMatch([admin,
-                  {bucket_admin, ["test.test"]},
-                  {bucket_admin, [any]},
-                  {error, "no_such_atom"},
-                  {error, "bucket_admin[default"}], Res).
 
 reply_bad_roles(Req, BadRoles) ->
     Str = string:join(BadRoles, ","),
     menelaus_util:reply_json(
       Req,
-      iolist_to_binary(io_lib:format("Malformed or unknown roles: [~s]", [Str])), 400).
+      iolist_to_binary(io_lib:format(
+                         "Cannot assign roles to user because the following roles are unknown, "
+                         "malformed or role parameters are undefined: [~s]", [Str])), 400).
 
-type_to_atom("builtin") ->
-    builtin;
-type_to_atom("external") ->
-    saslauthd;
-type_to_atom(_) ->
+domain_to_atom("local") ->
+    local;
+domain_to_atom("external") ->
+    external;
+domain_to_atom(_) ->
     unknown.
 
 verify_length([P, Len]) ->
@@ -486,6 +683,8 @@ validate_cred(P, password) ->
     execute_verifiers(Verifiers);
 validate_cred([], username) ->
     <<"Username must not be empty">>;
+validate_cred(Username, username) when length(Username) > 128 ->
+    <<"Username may not exceed 128 characters">>;
 validate_cred(Username, username) ->
     V = lists:all(
           fun (C) ->
@@ -497,19 +696,19 @@ validate_cred(Username, username) ->
     V orelse
         <<"The username must not contain spaces, control or any of ()<>@,;:\\\"/[]?={} characters and must be valid utf8">>.
 
-handle_put_user(Type, UserId, Req) ->
+handle_put_user(Domain, UserId, Req) ->
     assert_api_can_be_used(),
     assert_no_users_upgrade(),
 
     case validate_cred(UserId, username) of
         true ->
-            case type_to_atom(Type) of
+            case domain_to_atom(Domain) of
                 unknown ->
-                    menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
-                saslauthd = T ->
+                    menelaus_util:reply_json(Req, <<"Unknown user domain.">>, 404);
+                external = T ->
                     menelaus_web:assert_is_enterprise(),
                     handle_put_user_with_identity({UserId, T}, Req);
-                builtin = T ->
+                local = T ->
                     menelaus_web:assert_is_spock(),
                     handle_put_user_with_identity({UserId, T}, Req)
             end;
@@ -529,20 +728,20 @@ validate_password(R1) ->
               end
       end, password, R2).
 
-validate_put_user(Type, Args) ->
+validate_put_user(Domain, Args) ->
     R0 = menelaus_util:validate_has_params({Args, [], []}),
     R1 = menelaus_util:validate_any_value(name, R0),
     R2 = menelaus_util:validate_required(roles, R1),
     R3 = menelaus_util:validate_any_value(roles, R2),
-    R4 = case Type of
-             builtin ->
+    R4 = case Domain of
+             local ->
                  validate_password(R3);
-             saslauthd ->
+             external ->
                  R3
          end,
     menelaus_util:validate_unsupported_params(R4).
 
-handle_put_user_with_identity({_UserId, Type} = Identity, Req) ->
+handle_put_user_with_identity({_UserId, Domain} = Identity, Req) ->
     menelaus_util:execute_if_validated(
       fun (Values) ->
               handle_put_user_validated(Identity,
@@ -550,7 +749,7 @@ handle_put_user_with_identity({_UserId, Type} = Identity, Req) ->
                                         proplists:get_value(password, Values),
                                         proplists:get_value(roles, Values),
                                         Req)
-      end, Req, validate_put_user(Type, Req:parse_post())).
+      end, Req, validate_put_user(Domain, Req:parse_post())).
 
 handle_put_user_validated(Identity, Name, Password, RawRoles, Req) ->
     Roles = parse_roles(RawRoles),
@@ -558,9 +757,10 @@ handle_put_user_validated(Identity, Name, Password, RawRoles, Req) ->
     BadRoles = [BadRole || {error, BadRole} <- Roles],
     case BadRoles of
         [] ->
-            case menelaus_users:store_user(Identity, Name, Password, Roles) of
+            UniqueRoles = ordsets:to_list(ordsets:from_list(Roles)),
+            case menelaus_users:store_user(Identity, Name, Password, UniqueRoles) of
                 {commit, _} ->
-                    ns_audit:set_user(Req, Identity, Roles, Name),
+                    ns_audit:set_user(Req, Identity, UniqueRoles, Name),
                     reply_put_delete_users(Req);
                 {abort, {error, roles_validation, UnknownRoles}} ->
                     reply_bad_roles(Req, [role_to_string(UR) || UR <- UnknownRoles]);
@@ -573,16 +773,22 @@ handle_put_user_validated(Identity, Name, Password, RawRoles, Req) ->
                     erlang:error(exceeded_retries)
             end;
         _ ->
-            reply_bad_roles(Req, BadRoles)
+            ParsedRoles = lists:filter(fun ({error, _}) ->
+                                               false;
+                                           (_) ->
+                                               true
+                                       end, Roles),
+            {_, MoreBadRoles} = menelaus_roles:validate_roles(ParsedRoles, ns_config:latest()),
+            reply_bad_roles(Req, BadRoles ++ [role_to_string(R) || R <- MoreBadRoles])
     end.
 
-handle_delete_user(Type, UserId, Req) ->
+handle_delete_user(Domain, UserId, Req) ->
     menelaus_web:assert_is_45(),
     assert_no_users_upgrade(),
 
-    case type_to_atom(Type) of
+    case domain_to_atom(Domain) of
         unknown ->
-            menelaus_util:reply_json(Req, <<"Unknown user type.">>, 404);
+            menelaus_util:reply_json(Req, <<"Unknown user domain.">>, 404);
         T ->
             Identity = {UserId, T},
             case menelaus_users:delete_user(Identity) of
@@ -626,7 +832,7 @@ handle_change_password(Req) ->
     case menelaus_auth:get_token(Req) of
         undefined ->
             case menelaus_auth:get_identity(Req) of
-                {_, builtin} = Identity ->
+                {_, local} = Identity ->
                     handle_change_password_with_identity(Req, Identity);
                 {_, admin} = Identity ->
                     handle_change_password_with_identity(Req, Identity);
@@ -650,7 +856,7 @@ handle_change_password_with_identity(Req, Identity) ->
               end
       end, Req, validate_change_password(Req:parse_post())).
 
-do_change_password({_, builtin} = Identity, Password) ->
+do_change_password({_, local} = Identity, Password) ->
     menelaus_users:change_password(Identity, Password);
 do_change_password({User, admin}, Password) ->
     ns_config_auth:set_credentials(admin, User, Password).
@@ -821,7 +1027,13 @@ parse_vertices([$. | Rest], Acc) ->
         {Name, [$[ | Rest1]} ->
             case parse_until(Rest1, "]") of
                 {Param, [$] | Rest2]} ->
-                    parse_vertices(Rest2, [{list_to_rbac_atom(Name), Param} | Acc]);
+                    parse_vertices(Rest2, [{list_to_rbac_atom(Name),
+                                            case Param of
+                                                "." ->
+                                                    any;
+                                                _ ->
+                                                    Param
+                                            end} | Acc]);
                 _ ->
                     error
             end
@@ -835,20 +1047,6 @@ parse_permissions(Body) ->
                       Trimmed = misc:trim(RawPermission),
                       {Trimmed, parse_permission(Trimmed)}
               end, RawPermissions).
-
-parse_permissions_test() ->
-    ?assertMatch(
-       [{"cluster.admin!write", {[admin], write}},
-        {"cluster.admin", error},
-        {"admin!write", error}],
-       parse_permissions("cluster.admin!write, cluster.admin, admin!write")),
-    ?assertMatch(
-       [{"cluster.bucket[test.test]!read", {[{bucket, "test.test"}], read}},
-        {"cluster.bucket[test.test].stats!read", {[{bucket, "test.test"}, stats], read}}],
-       parse_permissions(" cluster.bucket[test.test]!read, cluster.bucket[test.test].stats!read ")),
-    ?assertMatch(
-       [{"cluster.no_such_atom!no_such_atom", {['_unknown_'], '_unknown_'}}],
-       parse_permissions("cluster.no_such_atom!no_such_atom")).
 
 handle_check_permissions_post(Req) ->
     Body = Req:recv_body(),
@@ -872,15 +1070,18 @@ handle_check_permissions_post(Req) ->
     end.
 
 check_permissions_url_version(Config) ->
-    erlang:phash2([cluster_compat_mode:get_compat_version(Config),
-                   menelaus_users:get_users_version(),
-                   ns_bucket:get_bucket_names(ns_bucket:get_buckets(Config)),
-                   ns_config_auth:get_no_auth_buckets(Config)]).
+    B = term_to_binary(
+          [cluster_compat_mode:get_compat_version(Config),
+           menelaus_users:get_users_version(),
+           [{Name, proplists:get_value(uuid, BucketConfig)} ||
+               {Name, BucketConfig} <- ns_bucket:get_buckets(Config)],
+           ns_config_auth:get_no_auth_buckets(Config)]),
+    base64:encode(crypto:hash(sha, B)).
 
 handle_check_permission_for_cbauth(Req) ->
     Params = Req:parse_qs(),
     Identity = {proplists:get_value("user", Params),
-                list_to_existing_atom(proplists:get_value("src", Params))},
+                list_to_existing_atom(proplists:get_value("domain", Params))},
     RawPermission = proplists:get_value("permission", Params),
     Permission = parse_permission(misc:trim(RawPermission)),
 
@@ -894,7 +1095,7 @@ handle_check_permission_for_cbauth(Req) ->
 vertex_to_iolist(Atom) when is_atom(Atom) ->
     atom_to_list(Atom);
 vertex_to_iolist({Atom, any}) ->
-    [atom_to_list(Atom), "[*]"];
+    [atom_to_list(Atom), "[.]"];
 vertex_to_iolist({Atom, Param}) ->
     [atom_to_list(Atom), "[", Param, "]"].
 
@@ -911,22 +1112,6 @@ format_permissions(Permissions) ->
                     (Permission, Acc) ->
                         [iolist_to_binary(permission_to_iolist(Permission)) | Acc]
                 end, [], Permissions).
-
-format_permissions_test() ->
-    Permissions = [{[{bucket, any}, views], write},
-                   {[{bucket, "default"}], all},
-                   {[], all},
-                   {[admin, diag], read},
-                   {[{bucket, "test"}, xdcr], [write, execute]}],
-    Formatted = [<<"cluster.bucket[*].views!write">>,
-                 <<"cluster.bucket[default]!all">>,
-                 <<"cluster!all">>,
-                 <<"cluster.admin.diag!read">>,
-                 <<"cluster.bucket[test].xdcr!write">>,
-                 <<"cluster.bucket[test].xdcr!execute">>],
-    ?assertEqual(
-       lists:sort(Formatted),
-       lists:sort(format_permissions(Permissions))).
 
 forbidden_response(Permissions) when is_list(Permissions) ->
     {[{message, <<"Forbidden. User needs one of the following permissions">>},
@@ -987,3 +1172,172 @@ assert_no_users_upgrade() ->
                           "Not allowed during cluster upgrade.",
                           []})
     end.
+
+%% Tests
+parse_roles_test() ->
+    Res = parse_roles("admin, bucket_admin[test.test], bucket_admin[*], no_such_atom, bucket_admin[default"),
+    ?assertMatch([admin,
+                  {bucket_admin, ["test.test"]},
+                  {bucket_admin, [any]},
+                  {error, "no_such_atom"},
+                  {error, "bucket_admin[default"}], Res).
+
+parse_permissions_test() ->
+    ?assertMatch(
+       [{"cluster.admin!write", {[admin], write}},
+        {"cluster.admin", error},
+        {"admin!write", error}],
+       parse_permissions("cluster.admin!write, cluster.admin, admin!write")),
+    ?assertMatch(
+       [{"cluster.bucket[test.test]!read", {[{bucket, "test.test"}], read}},
+        {"cluster.bucket[test.test].stats!read", {[{bucket, "test.test"}, stats], read}}],
+       parse_permissions(" cluster.bucket[test.test]!read, cluster.bucket[test.test].stats!read ")),
+    ?assertMatch(
+       [{"cluster.no_such_atom!no_such_atom", {['_unknown_'], '_unknown_'}}],
+       parse_permissions("cluster.no_such_atom!no_such_atom")).
+
+format_permissions_test() ->
+    Permissions = [{[{bucket, any}, views], write},
+                   {[{bucket, "default"}], all},
+                   {[], all},
+                   {[admin, diag], read},
+                   {[{bucket, "test"}, xdcr], [write, execute]}],
+    Formatted = [<<"cluster.bucket[.].views!write">>,
+                 <<"cluster.bucket[default]!all">>,
+                 <<"cluster!all">>,
+                 <<"cluster.admin.diag!read">>,
+                 <<"cluster.bucket[test].xdcr!write">>,
+                 <<"cluster.bucket[test].xdcr!execute">>],
+    ?assertEqual(
+       lists:sort(Formatted),
+       lists:sort(format_permissions(Permissions))).
+
+toy_users(First, Last) ->
+    [{{lists:flatten(io_lib:format("a~b", [U])), local}, []} || U <- lists:seq(First, Last)].
+
+process_toy_users(Users, Start, PageSize) ->
+    {JsonFromSkews, Links} =
+        json_from_skews(
+          lists:foldl(
+            fun (U, Skews) ->
+                    add_to_skews(U, Skews)
+            end, create_skews(Start, PageSize), Users),
+          PageSize, fun (U) -> U end),
+    {lists:sort(JsonFromSkews), lists:sort(Links)}.
+
+toy_result(Params, Links) ->
+    {lists:sort(Params), lists:sort(seed_links(Links))}.
+
+no_users_no_params_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 0},
+          {users, []}],
+         []),
+       process_toy_users([], undefined, 3)).
+
+no_users_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 0},
+          {users, []}],
+         []),
+       process_toy_users([], {"a14", local}, 3)).
+
+one_user_no_params_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 0},
+          {users, toy_users(10, 10)}],
+         []),
+       process_toy_users(toy_users(10, 10), undefined, 3)).
+
+first_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 0},
+          {users, toy_users(10, 12)}],
+         [{last, {"a28", local}},
+          {next, {"a13", local}}]),
+       process_toy_users(toy_users(10, 30), undefined, 3)).
+
+first_page_with_params_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 0},
+          {users, toy_users(10, 12)}],
+         [{last, {"a28", local}},
+          {next, {"a13", local}}]),
+       process_toy_users(toy_users(10, 30), {"a10", local}, 3)).
+
+middle_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 4},
+          {users, toy_users(14, 16)}],
+         [{first, noparams},
+          {prev, {"a11", local}},
+          {last, {"a28", local}},
+          {next, {"a17", local}}]),
+       process_toy_users(toy_users(10, 30), {"a14", local}, 3)).
+
+middle_page_non_existent_user_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 5},
+          {users, toy_users(15, 17)}],
+         [{first, noparams},
+          {prev, {"a12", local}},
+          {last, {"a28", local}},
+          {next, {"a18", local}}]),
+       process_toy_users(toy_users(10, 30), {"a14b", local}, 3)).
+
+near_the_end_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 17},
+          {users, toy_users(27, 29)}],
+         [{first, noparams},
+          {prev, {"a24", local}},
+          {last, {"a28", local}},
+          {next, {"a28", local}}]),
+       process_toy_users(toy_users(10, 30), {"a27", local}, 3)).
+
+at_the_end_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 19},
+          {users, toy_users(29, 30)}],
+         [{first, noparams},
+          {prev, {"a26", local}}]),
+       process_toy_users(toy_users(10, 30), {"a29", local}, 3)).
+
+after_the_end_page_test() ->
+    ?assertEqual(
+       toy_result(
+         [{skipped, 21},
+          {users, []}],
+         [{first, noparams},
+          {prev, {"a28", local}}]),
+       process_toy_users(toy_users(10, 30), {"b29", local}, 3)).
+
+validate_cred_username_test() ->
+    LongButValid = "Username_that_is_127_characters_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    ?assertEqual(127, length(LongButValid)),
+    ?assertEqual(true, validate_cred("valid", username)),
+    ?assertEqual(true, validate_cred(LongButValid, username)),
+    ?assertNotEqual(true, validate_cred([], username)),
+    ?assertNotEqual(true, validate_cred("", username)),
+    ?assertNotEqual(true, validate_cred(LongButValid ++ "more_than_128_characters", username)),
+    ?assertNotEqual(true, validate_cred([7], username)),
+    ?assertNotEqual(true, validate_cred([127], username)),
+    ?assertNotEqual(true, validate_cred("=", username)),
+
+    %%% The following block does not work after compilation with erralng 16
+    %%% due to non-native utf8 enoding of strings in .beam compiled files.
+    %%% TODO: re-enable this after upgrading to eralng 19+.
+    % Utf8 = "ξ",
+    % ?assertEqual(1,length(Utf8)),
+    % ?assertEqual(true, validate_cred(Utf8, username)),                  % "ξ" is codepoint 958
+    % ?assertEqual(true, validate_cred(LongButValid ++ Utf8, username)),  % 128 code points
+    ok.

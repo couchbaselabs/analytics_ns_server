@@ -34,7 +34,51 @@
     .filter('isDisabled', isDisabled)
     .filter('mnIntegerToString', mnIntegerToString)
     .filter('mnFormatStorageMode', mnFormatStorageMode)
-    .filter('mnLimitTo', mnLimitTo);
+    .filter('mnLimitTo', mnLimitTo)
+    .filter('jQueryLikeParamSerializer', jQueryLikeParamSerializer);
+
+  //function is borrowed from the Angular source code because we want to
+  //use $httpParamSerializerJQLik but with properly encoded params via
+  //encodeURIComponent since it uses correct application/x-www-form-urlencoded
+  //encoding algorithm, in accordance with
+  //https://www.w3.org/TR/html5/forms.html#url-encoded-form-data
+  function jQueryLikeParamSerializer() {
+    return function (params) {
+      if (!params) {
+        return '';
+      }
+      var parts = [];
+      serialize(params, '', true);
+      return parts.join('&');
+
+      function serializeValue(v) {
+        if (angular.isObject(v)) {
+          return angular.isDate(v) ? v.toISOString() : angular.toJson(v);
+        }
+        if (v === null || angular.isUndefined(v)) {
+          return "";
+        }
+        return v;
+      }
+
+      function serialize(toSerialize, prefix, topLevel) {
+        if (angular.isArray(toSerialize)) {
+          angular.forEach(toSerialize, function (value, index) {
+            serialize(value, prefix + '[' + (angular.isObject(value) ? index : '') + ']');
+          });
+        } else if (angular.isObject(toSerialize) && !angular.isDate(toSerialize)) {
+          angular.forEach(toSerialize, function (value, key) {
+            serialize(value, prefix +
+                      (topLevel ? '' : '[') +
+                      key +
+                      (topLevel ? '' : ']'));
+          });
+        } else {
+          parts.push(encodeURIComponent(prefix) + '=' + encodeURIComponent(serializeValue(toSerialize)));
+        }
+      }
+    }
+  }
 
   //angular limitTo uses slice in order to truncate sting
   //the method is very slow in case string is very big
@@ -467,7 +511,6 @@
       // We append the build # to the release version when we display in the UI so that
       // customers think of the build # as a descriptive piece of the version they're
       // running (which in the case of maintenance packs and one-off's, it is.)
-      a[0] = a[0] + "-" + a[1];
       a[3] = (a[3] && (a[3].substr(0, 1).toUpperCase() + a[3].substr(1))) || "DEV";
       return a; // Example result: ["1.8.0-9", "9", "ga083a1e", "Enterprise"]
     }

@@ -24,7 +24,7 @@
       $scope.mnSortableTable = ctl;
       if ($attrs.sortByDefault) {
         ctl.setOrderOrToggleInvert(
-          $scope.mnSortableTitle || $scope.sortFunction,
+          $scope.sortFunction || $scope.mnSortableTitle,
           $scope.mnSortableTitle
         );
       }
@@ -32,7 +32,12 @@
       $transclude(function (cloned) {
         cloned.attr(
           'ng-click',
-          'mnSortableTable.setOrderOrToggleInvert(mnSortableTitle || sortFunction, mnSortableTitle)'
+          'mnSortableTable.setOrderOrToggleInvert(sortFunction || mnSortableTitle, mnSortableTitle)'
+        );
+        cloned.attr(
+          'ng-class',
+          '{"dynamic-active": mnSortableTable.isOrderBy("'+ $scope.mnSortableTitle +'"),'
+         + '"dynamic-inverted": mnSortableTable.isOrderBy("'+ $scope.mnSortableTitle +'") && mnSortableTable.sortableTableProperties.invert}'
         );
         cloned.removeAttr('mn-sortable-title');
         $element.after($compile(cloned)($scope));
@@ -51,8 +56,9 @@
 
     return mnSortableTable;
 
-    function controller($scope, $element, $attrs) {
+    function controller($scope, $element, $attrs, $parse) {
       var currentSortableTitle;
+      var currentOrderByStringOrFunction;
       var vm = this;
 
       vm.sortableTableProperties = {
@@ -60,6 +66,16 @@
         invert: null
       };
       vm.setOrderOrToggleInvert = setOrderOrToggleInvert;
+      vm.isOrderBy = isOrderBy;
+      vm.sortableTableProperties.orderBy = orderBy;
+
+      function orderBy(value) {
+        if (angular.isFunction(currentOrderByStringOrFunction)) {
+          return currentOrderByStringOrFunction({value: value});
+        } else {
+          return $parse(currentOrderByStringOrFunction)(value);
+        }
+      }
 
       function isOrderBy(name) {
         return currentSortableTitle === name;
@@ -74,7 +90,7 @@
       }
       function setOrder(orderBy, name) {
         currentSortableTitle = name;
-        vm.sortableTableProperties.orderBy = orderBy;
+        currentOrderByStringOrFunction = orderBy;
       }
     }
 

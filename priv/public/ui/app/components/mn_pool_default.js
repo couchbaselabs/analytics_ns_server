@@ -7,7 +7,7 @@
     ])
     .factory('mnPoolDefault', mnPoolDefaultFactory);
 
-  function mnPoolDefaultFactory($http, $q, mnPools, $window, $location, $httpParamSerializerJQLike) {
+  function mnPoolDefaultFactory($http, $q, mnPools, $window, $location, $httpParamSerializerJQLike, mnHelper) {
     var latest = {};
     var mnPoolDefault = {
       latestValue: latestValue,
@@ -83,6 +83,11 @@
         cache = poolDefault;
 
         return poolDefault;
+      }, function (resp) {
+        if ((resp.status === 404 && resp.data === "unknown pool") || resp.status === 500) {
+          mnHelper.reloadApp();
+        }
+        return $q.reject(resp);
       });
       return request;
     }
@@ -95,10 +100,16 @@
       return mnPoolDefault.clearCache().get(params);
     }
     /**
+     * getUrlsRunningService - returns a list of URLs for nodes in the cluster
+     *   running the named service. It assumes that you are currently on a page
+     *   associated with the service, and it appends the path for the current page
+     *   to the URL.
+     *
      * @param nodeInfos - details on the nodes in the cluster returned
      *                    by
      * @param service - name of service
-     * @param max - max number of links to return
+     * @param max - optional max number of links to return
+     *
      * @return a list of URLs for the current UI location running the
      *         specified service.
      */
@@ -121,7 +132,7 @@
           + "://" + hostnameAndPort[0]
           + ":" + port
           + appbase
-          + "#" + $location.path()
+          + "#!" + $location.path()
           + (search ? "?" + search : "")
           + (hash ? "#" + hash : "");
       });

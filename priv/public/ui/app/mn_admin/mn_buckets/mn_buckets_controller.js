@@ -16,11 +16,12 @@
       'mnFilters',
       'mnTasksDetails',
       'mnWarmupProgress',
-      'mnElementCrane'
+      'mnElementCrane',
+      'mnSortableTable'
     ])
     .controller('mnBucketsController', mnBucketsController);
 
-  function mnBucketsController($scope, mnBucketsService, mnHelper, mnPoolDefault, mnPromiseHelper, mnPoller, $uibModal) {
+  function mnBucketsController($scope, mnBucketsService, mnHelper, mnPoolDefault, mnPromiseHelper, mnPoller, $uibModal, $rootScope, $interval) {
     var vm = this;
 
     var poolDefault = mnPoolDefault.latestValue();
@@ -35,14 +36,24 @@
 
     activate();
 
+    function activate() {
+      var pull = $interval(function () {
+        $rootScope.$broadcast("reloadBucketStats");
+      }, 5000);
+
+      $scope.$on('$destroy', function () {
+        $interval.cancel(pull);
+      });
+    }
+
     function isCreateNewDataBucketDisabled() {
-      return !vm.buckets || areThereCreationWarnings();
+      return !$scope.buckets || !$scope.buckets.details || areThereCreationWarnings();
     }
     function isBucketCreationWarning() {
       return poolDefault.value.rebalancing;
     }
     function isMaxBucketCountWarning() {
-      return (vm.buckets || []).length >= poolDefault.value.maxBucketCount;
+      return (($scope.buckets && $scope.buckets.details) || []).length >= poolDefault.value.maxBucketCount;
     }
     function areThereCreationWarnings() {
       return isMaxBucketCountWarning() || isBucketCreationWarning();
@@ -69,16 +80,6 @@
             });
           }
         });
-    }
-    function activate() {
-      new mnPoller($scope, function () {
-        return mnBucketsService.getBucketsForBucketsPage();
-      })
-      .setInterval(10000)
-      .subscribe("buckets", vm)
-      .reloadOnScopeEvent("bucketUriChanged")
-      .reloadOnScopeEvent("reloadBucketsPoller", vm, "showBucketsPollerSpinner")
-      .cycle();
     }
   }
 })();

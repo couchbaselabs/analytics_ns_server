@@ -27,11 +27,11 @@
     <span class="cbui-table-cell">
       {{'round' | mnMath:bucket.basicStats.opsPerSec}}
     </span>
-    <span class="cbui-table-cell flex-grow-1-5">
+    <span class="cbui-table-cell flex-grow-1-5 resp-hide-sml">
       {{bucket.basicStats.memUsed | mnFormatQuantity}} /
       {{bucket.quota.ram | mnFormatQuantity}}
     </span>
-    <span class="cbui-table-cell">
+    <span class="cbui-table-cell resp-hide-med">
       <span ng-show="bucket.isMembase">
         {{bucket.basicStats.diskUsed | mnFormatQuantity}}
       </span>
@@ -39,21 +39,21 @@
         &#8212;
       </span>
     </span>
-    <span class="cbui-table-cell flex-grow-1-5 wrap text-right">
-      <span ng-if="bucket.isMembase">
+    <span class="cbui-table-cell flex-grow-1-5 wrap text-right resp-hide-xsml">
+      <span ng-if="!bucket.isMemcached">
         <a
            ng-click="$event.stopPropagation()"
            class="nowrap"
            style="margin-right: -3px;"
            ng-show="rbac.cluster.bucket[bucket.name].data.read"
-           ui-sref="app.admin.buckets.documents.control.list({bucket: bucket.name})">
+           ui-sref="app.admin.buckets.documents.control.list({bucket: bucket.name, statsHostname: 'all'})">
           Documents</a>
       </span>
       <a
          ng-click="$event.stopPropagation()"
          title="Go to statistics for {{ bucket.name }}"
-         ui-sref="app.admin.buckets.analytics.list.graph({bucket: bucket.name })"
-         ng-show="rbac.cluster.bucket[bucket.name].stats.read"
+         ui-sref="app.admin.buckets.analytics.list.graph({bucket: bucket.name, statsHostname: 'all'})"
+         ng-show="rbac.cluster.bucket[bucket.name].stats.read && rbac.cluster.stats.read"
          class="margin-left-half nowrap">
         Statistics
       </a>
@@ -84,5 +84,8 @@
       {{bucketsItemCtl.getWarmUpProgress(bucket, adminCtl.tasks) | mnTruncateTo3Digits}}% complete warmup
     </div>
   </div>
-  <div class="cbui-tablerow-expanded" ng-if="bucketsListCtl.isDetailsOpened(bucket.name)" ui-view="details"></div>
+  <div
+     class="cbui-tablerow-expanded"
+     ng-if="bucketsListCtl.isDetailsOpened(bucket.name) && rbac.cluster.bucket[bucket.name].settings.read"
+     ui-view="details"></div>
 </section>

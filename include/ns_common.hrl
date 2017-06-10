@@ -35,6 +35,7 @@
 -type seq_no() :: non_neg_integer().
 -type rev() :: {seq_no(), rev_id()}.
 -type rebalance_vbucket_state() :: passive | undefined | paused.
+-type janitor_item() :: services | {bucket, bucket_name()}.
 
 -type ext_bucket_name() :: bucket_name() | binary().
 %% ext vbucket id is vbucket id (potentially as binary) or <<"master">>
@@ -206,6 +207,8 @@
 
 -define(MIN_FREE_RAM, misc:get_env_default(quota_min_free_ram, 1024)).
 -define(MIN_FREE_RAM_PERCENT, 80).
+
+-define(DEFAULT_EPHEMERAL_PURGE_INTERVAL_DAYS, 3).
 
 %% Index storage mode values.
 -define(INDEX_STORAGE_MODE_MEMORY_OPTIMIZED, <<"memory_optimized">>).

@@ -26,8 +26,7 @@
          extract_auth/1,
          extract_auth_user/1,
          extract_ui_auth_token/1,
-         complete_uilogin/2,
-         reject_uilogin/2,
+         uilogin/3,
          complete_uilogout/1,
          maybe_refresh_token/1,
          get_identity/1,
@@ -38,7 +37,8 @@
          verify_local_token/1]).
 
 %% rpc from ns_couchdb node
--export([verify_rest_auth_on_ns_server/2]).
+-export([authenticate/1,
+         saslauthd_authenticate/2]).
 
 %% External API
 
@@ -99,18 +99,6 @@ kill_auth_cookie(Req) ->
     {Name, Content} = mochiweb_cookies:cookie(ui_auth_cookie_name(Req), "", Options),
     {Name, Content ++ "; expires=Thu, 01 Jan 1970 00:00:00 GMT"}.
 
--spec complete_uilogin(mochiweb_request(), rbac_identity()) -> mochiweb_response().
-complete_uilogin(Req, Identity) ->
-    Token = menelaus_ui_auth:generate_token(Identity),
-    CookieHeader = generate_auth_cookie(Req, Token),
-    ns_audit:login_success(store_user_info(Req, Identity, Token)),
-    menelaus_util:reply(Req, 200, [CookieHeader]).
-
--spec reject_uilogin(mochiweb_request(), rbac_identity()) -> mochiweb_response().
-reject_uilogin(Req, Identity) ->
-    ns_audit:login_failure(store_user_info(Req, Identity, undefined)),
-    menelaus_util:reply(Req, 400).
-
 -spec complete_uilogout(mochiweb_request()) -> mochiweb_response().
 complete_uilogout(Req) ->
     CookieHeader = kill_auth_cookie(Req),
@@ -133,16 +121,16 @@ maybe_refresh_token(Req) ->
 -spec validate_request(mochiweb_request()) -> ok.
 validate_request(Req) ->
     undefined = Req:get_header_value("menelaus-auth-user"),
-    undefined = Req:get_header_value("menelaus-auth-src"),
+    undefined = Req:get_header_value("menelaus-auth-domain"),
     undefined = Req:get_header_value("menelaus-auth-token"),
     ok.
 
 -spec store_user_info(mochiweb_request(), rbac_identity(), auth_token() | undefined) ->
                              mochiweb_request().
-store_user_info(Req, {User, Src}, Token) ->
+store_user_info(Req, {User, Domain}, Token) ->
     Headers = Req:get(headers),
     H1 = mochiweb_headers:enter("menelaus-auth-user", User, Headers),
-    H2 = mochiweb_headers:enter("menelaus-auth-src", Src, H1),
+    H2 = mochiweb_headers:enter("menelaus-auth-domain", Domain, H1),
     H3 = case Token of
              undefined ->
                  H2;
@@ -154,11 +142,11 @@ store_user_info(Req, {User, Src}, Token) ->
 -spec get_identity(mochiweb_request()) -> rbac_identity() | undefined.
 get_identity(Req) ->
     case {Req:get_header_value("menelaus-auth-user"),
-          Req:get_header_value("menelaus-auth-src")} of
+          Req:get_header_value("menelaus-auth-domain")} of
         {undefined, undefined} ->
             undefined;
-        {User, Src} ->
-            {User, list_to_existing_atom(Src)}
+        {User, Domain} ->
+            {User, list_to_existing_atom(Domain)}
     end.
 
 -spec get_token(mochiweb_request()) -> auth_token() | undefined.
@@ -184,16 +172,7 @@ extract_auth(Req) ->
                 "Basic " ++ Value ->
                     parse_user_password(base64:decode_to_string(Value));
                 _ ->
-                    Method = Req:get(method),
-                    case Method =:= 'GET' orelse Method =:= 'HEAD' of
-                        true ->
-                            case extract_ui_auth_token(Req) of
-                                undefined -> undefined;
-                                Token -> {token, Token}
-                            end;
-                        _ ->
-                            undefined
-                    end
+                    undefined
             end
     end.
 
@@ -226,19 +205,24 @@ has_permission(Permission, Req) ->
                           false | {ok, rbac_identity()} | {error, term()}.
 authenticate(undefined) ->
     {ok, {"", anonymous}};
-authenticate({token, Token}) ->
-    case menelaus_ui_auth:check(Token) of
+authenticate({token, Token} = Param) ->
+    case ns_node_disco:couchdb_node() == node() of
         false ->
-            %% this is needed so UI can get /pools on unprovisioned
-            %% system with leftover cookie
-            case ns_config_auth:is_system_provisioned() of
+            case menelaus_ui_auth:check(Token) of
                 false ->
-                    {ok, {"", wrong_token}};
-                true ->
-                    false
+                    %% this is needed so UI can get /pools on unprovisioned
+                    %% system with leftover cookie
+                    case ns_config_auth:is_system_provisioned() of
+                        false ->
+                            {ok, {"", wrong_token}};
+                        true ->
+                            false
+                    end;
+                Other ->
+                    Other
             end;
-        Other ->
-            Other
+        true ->
+            rpc:call(ns_node_disco:ns_server_node(), ?MODULE, authenticate, [Param])
     end;
 authenticate({Username, Password}) ->
     case ns_config_auth:authenticate(Username, Password) of
@@ -251,57 +235,74 @@ authenticate({Username, Password}) ->
 -spec saslauthd_authenticate(rbac_user_id(), rbac_password()) ->
                                     false | {ok, rbac_identity()} | {error, term()}.
 saslauthd_authenticate(Username, Password) ->
-    case saslauthd_auth:authenticate(Username, Password) of
-        true ->
-            Identity = {Username, saslauthd},
-            case menelaus_users:user_exists(Identity) of
+    case ns_node_disco:couchdb_node() == node() of
+        false ->
+            case saslauthd_auth:authenticate(Username, Password) of
+                true ->
+                    Identity = {Username, external},
+                    case menelaus_users:user_exists(Identity) of
+                        false ->
+                            false;
+                        true ->
+                            {ok, Identity}
+                    end;
                 false ->
                     false;
-                true ->
-                    {ok, Identity}
+                {error, Error} ->
+                    {error, Error}
             end;
-        false ->
-            false;
-        {error, Error} ->
-            {error, Error}
+        true ->
+            rpc:call(ns_node_disco:ns_server_node(), ?MODULE, saslauthd_authenticate,
+                     [Username, Password])
     end.
 
 -spec verify_login_creds(rbac_user_id(), rbac_password()) ->
-                                false | {ok, rbac_identity()} | {error, term()}.
+                                auth_failure | {forbidden, rbac_identity(), rbac_permission()} |
+                                {ok, rbac_identity()} | {error, term()}.
 verify_login_creds(Username, Password) ->
     case authenticate({Username, Password}) of
-        {ok, {Username, bucket}} ->
-            false;
         {ok, Identity} ->
-            case check_permission(Identity, {[ui], read}) of
+            UIPermission = {[ui], read},
+            case check_permission(Identity, UIPermission) of
                 allowed ->
                     {ok, Identity};
                 _ ->
-                    false
+                    {forbidden, Identity, UIPermission}
             end;
+        false ->
+            auth_failure;
         Other ->
             Other
+    end.
+
+-spec uilogin(mochiweb_request(), rbac_user_id(), rbac_password()) -> mochiweb_response().
+uilogin(Req, User, Password) ->
+    case verify_login_creds(User, Password) of
+        {ok, Identity} ->
+            Token = menelaus_ui_auth:generate_token(Identity),
+            CookieHeader = generate_auth_cookie(Req, Token),
+            ns_audit:login_success(store_user_info(Req, Identity, Token)),
+            menelaus_util:reply(Req, 200, [CookieHeader]);
+        auth_failure ->
+            ns_audit:login_failure(store_user_info(Req, {User, rejected}, undefined)),
+            menelaus_util:reply(Req, 400);
+        {forbidden, Identity, Permission} ->
+            ns_audit:login_failure(store_user_info(Req, Identity, undefined)),
+            menelaus_util:reply_json(Req, menelaus_web_rbac:forbidden_response(Permission), 403)
     end.
 
 -spec verify_rest_auth(mochiweb_request(), rbac_permission() | no_check) ->
                               auth_failure | forbidden | {allowed, mochiweb_request()}.
 verify_rest_auth(Req, Permission) ->
     Auth = extract_auth(Req),
-    RV = case ns_node_disco:couchdb_node() == node() of
-             false ->
-                 verify_rest_auth_on_ns_server(Auth, Permission);
-             true ->
-                 rpc:call(ns_node_disco:ns_server_node(), ?MODULE, verify_rest_auth_on_ns_server,
-                          [Auth, Permission])
-         end,
-    case RV of
+    case do_verify_rest_auth(Auth, Permission) of
         {allowed, Identity, Token} ->
             {allowed, store_user_info(Req, Identity, Token)};
         Other ->
             Other
     end.
 
-verify_rest_auth_on_ns_server(Auth, Permission) ->
+do_verify_rest_auth(Auth, Permission) ->
     case authenticate(Auth) of
         false ->
             auth_failure;

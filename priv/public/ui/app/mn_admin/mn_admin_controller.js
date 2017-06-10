@@ -5,10 +5,11 @@
     .module('mnAdmin')
     .controller('mnAdminController', mnAdminController);
 
-  function mnAdminController($scope, $rootScope, $state, $uibModal, mnAlertsService, poolDefault, mnSettingsNotificationsService, mnPromiseHelper, pools, mnPoller, mnEtagPoller, mnAuthService, mnTasksDetails, mnPoolDefault, mnSettingsAutoFailoverService, formatProgressMessageFilter, mnPrettyVersionFilter, mnPoorMansAlertsService, mnLostConnectionService, mnPermissions, mnPools, mnMemoryQuotaService, mnResetPasswordDialogService, whoami) {
+  function mnAdminController($scope, $rootScope, $state, $uibModal, mnAlertsService, poolDefault, mnSettingsNotificationsService, mnPromiseHelper, pools, mnPoller, mnEtagPoller, mnAuthService, mnTasksDetails, mnPoolDefault, mnSettingsAutoFailoverService, formatProgressMessageFilter, mnPrettyVersionFilter, mnPoorMansAlertsService, mnLostConnectionService, mnPermissions, mnPools, mnMemoryQuotaService, mnResetPasswordDialogService, whoami, mnBucketsStats, mnBucketsService) {
     var vm = this;
     vm.poolDefault = poolDefault;
     vm.launchpadId = pools.launchID;
+    vm.implementationVersion = pools.implementationVersion;
     vm.logout = mnAuthService.logout;
     vm.resetAutoFailOverCount = resetAutoFailOverCount;
     vm.isProgressBarClosed = true;
@@ -30,6 +31,7 @@
     $rootScope.rbac = mnPermissions.export;
     $rootScope.poolDefault = mnPoolDefault.export;
     $rootScope.pools = mnPools.export;
+    $rootScope.buckets = mnBucketsService.export;
 
     activate();
 
@@ -85,11 +87,11 @@
         vm.tabName = resp.clusterName;
 
         if (previous && !_.isEqual(resp.nodes, previous.nodes)) {
-          $rootScope.$broadcast("nodesChanged");
+          $rootScope.$broadcast("nodesChanged", [resp.nodes, previous.nodes]);
         }
 
         if (previous && previous.buckets.uri !== resp.buckets.uri) {
-          $rootScope.$broadcast("bucketUriChanged");
+          $rootScope.$broadcast("reloadBucketStats");
         }
 
         if (previous && previous.serverGroupsUri !== resp.serverGroupsUri) {
@@ -112,7 +114,7 @@
         }
 
         if (previous && previous.checkPermissionsURI != resp.checkPermissionsURI) {
-          mnPermissions.check();
+          $rootScope.$broadcast("reloadPermissions");
         }
       })
       .cycle();
@@ -161,17 +163,29 @@
             .cycle();
       }
 
+      $scope.$on("reloadPermissions", function () {
+        mnPermissions.getFresh();
+      });
+
       $scope.$on("reloadTasksPoller", function (event, params) {
         if (!params || !params.doNotShowSpinner) {
           vm.showTasksSpinner = true;
         }
-        tasksPoller.reload(true);
+        if (tasksPoller) {
+          tasksPoller.reload(true);
+        }
       });
 
       $scope.$on("reloadPoolDefaultPoller", function () {
         mnPoolDefault.clearCache();
         etagPoller.reload();
       });
+
+      $scope.$on("reloadBucketStats", function () {
+        mnBucketsService.clearCache();
+        mnBucketsService.getBucketsByType();
+      });
+      $rootScope.$broadcast("reloadBucketStats");
 
       $scope.$on("maybeShowMemoryQuotaDialog", function (event, services) {
         return mnPoolDefault.get().then(function (poolsDefault) {
@@ -183,7 +197,7 @@
               controller: 'mnServersMemoryQuotaDialogController as serversMemoryQuotaDialogCtl',
               resolve: {
                 memoryQuotaConfig: function (mnMemoryQuotaService) {
-                  return mnMemoryQuotaService.memoryQuotaConfig(services)
+                  return mnMemoryQuotaService.memoryQuotaConfig(services, true, false);
                 },
                 indexSettings: function (mnSettingsClusterService) {
                   return mnSettingsClusterService.getIndexSettings();

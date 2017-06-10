@@ -31,7 +31,9 @@
          code_change/3,
          terminate/2]).
 
--define(NUM_MESSAGES, 5). % Number of the most recent messages to log on crash
+%% Keep on 1KiB worth of recent messages to log if process crashes.
+-define(KEEP_MESSAGES_BYTES, 1024).
+
 %% we're passing port stdout/stderr messages to log after delay of
 %% INTERVAL milliseconds. Dropping messages once MAX_MESSAGES is
 %% reached. Thus we're limiting rate of messages to
@@ -44,8 +46,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 %% Server state
--record(state, {port :: port() | {inactive, tuple()},
-                name :: term(),
+-record(state, {port :: port() | pid() | undefined,
+                params :: tuple(),
                 messages,
                 logger :: atom(),
                 log_tref :: timer:tref(),
@@ -94,63 +96,75 @@ init(Fun) ->
         end,
 
     Port = case DontStart of
-               false -> open_port(Params2);
-               true -> {inactive, Params2}
+               false -> port_open(Params2, State);
+               true -> undefined
            end,
-    {ok, State#state{port = Port, name = Name,
-                     messages = ringbuffer:new(?NUM_MESSAGES)}}.
+    {ok, State#state{port = Port,
+                     params = Params2,
+                     messages = ringbuffer:new(?KEEP_MESSAGES_BYTES)}}.
 
-handle_info({send_to_port, Msg}, #state{port = P} = State) when not is_port(P) ->
+handle_info({send_to_port, Msg}, #state{port = undefined} = State) ->
     ?log_debug("Got send_to_port when there's no port running yet. Will kill myself."),
     {stop, {unexpected_send_to_port, {send_to_port, Msg}}, State};
 handle_info({send_to_port, Msg}, State) ->
     ?log_debug("Sending the following to port: ~p", [Msg]),
-    port_command(State#state.port, Msg),
+    port_write(State#state.port, Msg),
     {noreply, State};
-handle_info({_Port, {data, {_, Msg}}}, #state{logger = Logger} = State) ->
+handle_info({Port, {data, Data}}, #state{port = Port,
+                                         logger = Logger} = State) ->
     %% Store the last messages in case of a crash
-    Messages = ringbuffer:add(Msg, State#state.messages),
+    Msg = extract_message(Data),
+    Messages = ringbuffer:add(Msg, byte_size(Msg), State#state.messages),
     State1 = State#state{messages=Messages},
 
-    case Logger of
-        undefined ->
-            {Buf, Dropped} = case {State#state.log_buffer, State#state.dropped} of
-                                 {B, D} when length(B) < ?MAX_MESSAGES ->
-                                     {[Msg|B], D};
-                                 {B, D} ->
-                                     {B, D + 1}
-                             end,
-            TRef = case State#state.log_tref of
-                       undefined ->
-                           timer2:send_after(?INTERVAL, log);
-                       T ->
-                           T
-                   end,
-            {noreply, State1#state{log_buffer=Buf, log_tref=TRef, dropped=Dropped}};
-        _ ->
-            ale:debug(Logger, [Msg, $\n]),
-            {noreply, State1}
-    end;
+    NewState =
+        case Logger of
+            undefined ->
+                {Buf, Dropped} = case {State#state.log_buffer, State#state.dropped} of
+                                     {B, D} when length(B) < ?MAX_MESSAGES ->
+                                         {[Msg|B], D};
+                                     {B, D} ->
+                                         {B, D + 1}
+                                 end,
+                TRef = case State#state.log_tref of
+                           undefined ->
+                               timer2:send_after(?INTERVAL, log);
+                           T ->
+                               T
+                       end,
+                State1#state{log_buffer=Buf, log_tref=TRef, dropped=Dropped};
+            _ ->
+                %% This makes sure that disk sink's buffer is flushed. Since
+                %% logging to it asynchronous, this is needed for goport's
+                %% flow control to actually do its job.
+                ale:sync_sink(Logger),
+                ale:debug(Logger, Msg),
+                State1
+        end,
+
+    port_deliver(Port),
+    {noreply, NewState};
 handle_info(log, State) ->
     State1 = log(State),
     {noreply, State1};
 handle_info({_Port, {exit_status, Status}}, State) ->
-    ns_crash_log:record_crash({State#state.name,
+    ns_crash_log:record_crash({port_name(State),
                                Status,
-                               string:join(ringbuffer:to_list(State#state.messages), "\n")}),
+                               get_death_messages(State)}),
     {stop, {abnormal, Status}, State};
 handle_info({'EXIT', Port, Reason} = Exit, #state{port=Port} = State) ->
     ?log_error("Got unexpected exit signal from port: ~p. Exiting.", [Exit]),
     {stop, Reason, State}.
 
-handle_call(is_active, _From, State) ->
-    {reply, is_port(State#state.port), State};
+handle_call(is_active, _From, #state{port = Port} = State) ->
+    {reply, Port =/= undefined, State};
 
-handle_call(activate, _From, #state{port = P} = State) when is_port(P) ->
-    {reply, {error, already_active}, State};
-handle_call(activate, _From, #state{port = {inactive, Params}} = State) ->
-    State2 = State#state{port = open_port(Params)},
-    {reply, ok, State2}.
+handle_call(activate, _From, #state{port = undefined,
+                                    params = Params} = State) ->
+    State2 = State#state{port = port_open(Params, State)},
+    {reply, ok, State2};
+handle_call(activate, _From, State) ->
+    {reply, {error, already_active}, State}.
 
 handle_cast(unhandled, unhandled) ->
     erlang:exit(unhandled).
@@ -174,15 +188,14 @@ wait_for_child_death_process_info(Msg, State) ->
         {stop, _, State2} -> State2
     end.
 
-terminate(Reason, #state{port = P} = _State) when not is_port(P) ->
+terminate(Reason, #state{port = undefined} = _State) ->
     ?log_debug("doing nothing in terminate(~p) because port is not active", [Reason]),
     ok;
-terminate(shutdown, #state{port = Port, name = Name} = State) ->
-    ShutdownCmd = misc:get_env_default(ns_babysitter, port_shutdown_command, "shutdown"),
-    ?log_debug("Sending ~s to port ~p", [ShutdownCmd, Name]),
-    port_command(Port, [ShutdownCmd, 10]),
+terminate(shutdown, #state{port = Port} = State) ->
+    ?log_debug("Shutting down port ~p", [port_name(State)]),
+    port_shutdown(Port),
     State2 = wait_for_child_death(State),
-    ?log_debug("~p has exited", [Name]),
+    ?log_debug("~p has exited", [port_name(State)]),
     log(State2); % Log any remaining messages
 terminate(_Reason, State) ->
     log(State). % Log any remaining messages
@@ -207,37 +220,109 @@ log(#state{logger = undefined} = State) ->
         [] ->
             ok;
         Buf ->
-            ?log_info(format_lines(State#state.name, lists:reverse(Buf))),
+            ?log_info(format_lines(port_name(State), lists:reverse(Buf))),
             case State#state.dropped of
                 0 ->
                     ok;
                 Dropped ->
                     ?log_warning("Dropped ~p log lines from ~p",
-                                 [Dropped, State#state.name])
+                                 [Dropped, port_name(State)])
             end
     end,
     State#state{log_tref=undefined, log_buffer=[], dropped=0};
 log(_) ->
     ok.
 
-
-open_port({_Name, Cmd, Args, OptsIn}) ->
+port_open({_Name, Cmd, Args, OptsIn}, #state{logger = Logger}) ->
     %% Incoming options override existing ones (specified in proplists docs)
-    Opts0 = OptsIn ++ [{args, Args}, exit_status, {line, 8192},
-                       stderr_to_stdout],
+    Opts0 = OptsIn ++ [{args, Args}, exit_status,
+                       stream, binary, stderr_to_stdout],
+
     WriteDataArg = proplists:get_value(write_data, Opts0),
     Opts1 = lists:keydelete(write_data, 1, Opts0),
-    Opts = case lists:delete(ns_server_no_stderr_to_stdout, Opts1) of
-               Opts1 ->
-                   Opts1;
-               Opts3 ->
-                   lists:delete(stderr_to_stdout, Opts3)
+    Opts3 = case lists:delete(ns_server_no_stderr_to_stdout, Opts1) of
+                Opts1 ->
+                    Opts1;
+                Opts2 ->
+                    lists:delete(stderr_to_stdout, Opts2)
+            end,
+    ViaGoport = proplists:get_value(via_goport, Opts3, false),
+    Opts4 = proplists:delete(via_goport, Opts3),
+
+    %% don't split port output into lines if all we need to do is to redirect
+    %% it into a file
+    Opts = case Logger of
+               undefined ->
+                   [{line, 8192} | Opts4];
+               _ ->
+                   Opts4
            end,
-    Port = open_port({spawn_executable, Cmd}, Opts),
+
+    Port =
+        case ViaGoport of
+            true ->
+                {ok, P} = goport:start_link(Cmd, Opts),
+                P;
+            false ->
+                erlang:open_port({spawn_executable, Cmd}, Opts)
+        end,
+
     case WriteDataArg of
         undefined ->
             ok;
         Data ->
-            Port ! {self(), {command, Data}}
+            port_write(Port, Data)
     end,
+
+    %% initiate initial delivery
+    port_deliver(Port),
+
     Port.
+
+port_name(#state{params = Params}) ->
+    {Name, _, _, _} = Params,
+    Name.
+
+port_write(Port, Data) when is_pid(Port) ->
+    ok = goport:write(Port, Data);
+port_write(Port, Data) when is_port(Port) ->
+    Port ! {self(), {command, Data}}.
+
+port_shutdown(Port) when is_pid(Port) ->
+    ok = goport:shutdown(Port);
+port_shutdown(Port) when is_port(Port) ->
+    ShutdownCmd = misc:get_env_default(ns_babysitter,
+                                       port_shutdown_command, "shutdown"),
+    ?log_debug("Shutdown command: ~p", [ShutdownCmd]),
+    port_command(Port, [ShutdownCmd, $\n]).
+
+port_deliver(Port) when is_pid(Port) ->
+    goport:deliver(Port);
+port_deliver(Port) when is_port(Port) ->
+    ok.
+
+extract_message({eol, Msg}) ->
+    Msg;
+extract_message({noeol, Msg}) ->
+    Msg;
+extract_message(Msg) ->
+    Msg.
+
+get_death_messages(#state{messages = Messages, logger = undefined}) ->
+    %% we use line splitting for the processes whose output is not forwarded
+    %% to disk
+    misc:intersperse(ringbuffer:to_list(Messages), $\n);
+get_death_messages(#state{messages = Messages}) ->
+    %% Since the messages here are not split in lines, they can be quite big
+    %% and hence the total size of them can be quite a bit larger than
+    %% ?KEEP_MESSAGES_BYTES. So we manually split them into lines here and
+    %% select as few as possible.
+    Combined = iolist_to_binary(ringbuffer:to_list(Messages)),
+    Lines = binary:split(Combined, [<<"\n">>, <<"\r\n">>], [global]),
+
+    R = lists:foldl(
+          fun (Line, Acc) ->
+                  ringbuffer:add(Line, byte_size(Line), Acc)
+          end, ringbuffer:new(?KEEP_MESSAGES_BYTES), Lines),
+
+    misc:intersperse(ringbuffer:to_list(R), $\n).

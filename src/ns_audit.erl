@@ -62,7 +62,8 @@
          master_password_change/2,
          data_key_rotation/2,
          password_policy/2,
-         client_cert_auth/2
+         client_cert_auth/2,
+         security_settings/2
         ]).
 
 -export([stats/0]).
@@ -156,7 +157,9 @@ code(data_key_rotation) ->
 code(password_policy) ->
     8235;
 code(client_cert_auth) ->
-    8236.
+    8236;
+code(security_settings) ->
+    8237.
 
 to_binary({list, List}) ->
     [to_binary(A) || A <- List];
@@ -193,8 +196,8 @@ format_iso8601({{YYYY, MM, DD}, {Hour, Min, Sec}}, Microsecs, Offset) ->
 
 get_user_id(undefined) ->
     undefined;
-get_user_id({User, Source}) ->
-    {[{source, case Source of
+get_user_id({User, Domain}) ->
+    {[{source, case Domain of
                    admin ->
                        ns_server;
                    ro_admin ->
@@ -204,8 +207,8 @@ get_user_id({User, Source}) ->
                end},
       {user, to_binary(User)}]}.
 
-get_identity({User, Source}) ->
-    {[{source, Source}, {user, to_binary(User)}]}.
+get_identity({User, Domain}) ->
+    {[{source, Domain}, {user, to_binary(User)}]}.
 
 get_remote(Req) ->
     Socket = Req:get(socket),
@@ -542,4 +545,7 @@ password_policy(Req, Policy) ->
     put(password_policy, Req, PreparedPolicy).
 
 client_cert_auth(Req, Value) ->
-    put(client_cert_auth, Req, [{value, Value}]).
+    put(client_cert_auth, Req, Value).
+
+security_settings(Req, Settings) ->
+    put(security_settings, Req, [{settings, {prepare_list(Settings)}}]).

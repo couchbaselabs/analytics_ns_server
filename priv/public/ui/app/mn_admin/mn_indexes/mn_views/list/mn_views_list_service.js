@@ -19,8 +19,7 @@
       getViewsListState: getViewsListState,
       getDdocsByType: getDdocsByType,
       getTasksOfCurrentBucket: getTasksOfCurrentBucket,
-      isDevModeDoc: isDevModeDoc,
-      prepareBucketsDropdownData: prepareBucketsDropdownData
+      isDevModeDoc: isDevModeDoc
     };
 
     return mnViewsListService;
@@ -66,20 +65,6 @@
     function cutOffDesignPrefix(id) {
       return id.replace(/^_design\/(dev_|)/, "");
     }
-    function prepareBucketsDropdownData(params, fromCache) {
-      return mnBucketsService.getBucketsByType(fromCache).then(function (buckets) {
-        var rv = {};
-        rv.bucketsNames = buckets.byType.membase.names;
-        rv.bucketsNames.selected = params.bucket || buckets.byType.membase.defaultName;
-        return rv;
-      });
-    }
-    function getEmptyViewsState() {
-      var rv = {}
-      rv.development = [];
-      rv.production = [];
-      return $q.when(rv);
-    }
     function getDdocs(bucket, mnHttpParams) {
       return $http({
         method: "GET",
@@ -104,13 +89,10 @@
         return ddocs;
       }, function (resp) {
         switch (resp.status) {
-          case 400: return getEmptyViewsState().then(function (emptyState) {
-            emptyState.ddocsAreInFactMissing = resp.data.error === 'no_ddocs_service';
-            return emptyState;
-          });
-          case 0:
-          case -1: return $q.reject(resp);
-          default: return getEmptyViewsState();
+        case 0:
+        case -1: return $q.reject(resp);
+        case 404: return !bucket ? {status: "_404"} : resp;
+        default: return resp;
         }
       });
     }
@@ -140,11 +122,7 @@
       });
     }
     function getViewsListState(params) {
-      if (params.bucket) {
-        return getDdocsByType(params.bucket);
-      } else {
-        return getEmptyViewsState();
-      }
+      return getDdocsByType(params.bucket);
     }
   }
 })();

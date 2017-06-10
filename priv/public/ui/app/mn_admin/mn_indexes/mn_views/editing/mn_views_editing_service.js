@@ -5,7 +5,7 @@
     .module("mnViewsEditingService", ["mnViewsListService", "mnDocumentsEditingService", "mnViewsListService", "mnFilters"])
     .factory("mnViewsEditingService", mnViewsEditingFactory);
 
-  function mnViewsEditingFactory($http, $state, mnPermissions, mnViewsListService, mnDocumentsEditingService, mnDocumentsListService, $q, removeEmptyValueFilter, $httpParamSerializerJQLike, mnPoolDefault, viewsPerPageLimit, docBytesLimit, getStringBytesFilter) {
+  function mnViewsEditingFactory($http, $state, mnPermissions, mnViewsListService, mnDocumentsEditingService, mnDocumentsListService, $q, removeEmptyValueFilter, jQueryLikeParamSerializerFilter, mnPoolDefault, viewsPerPageLimit, docBytesLimit, getStringBytesFilter) {
     var mnViewsEditingService = {
       getViewsEditingState: getViewsEditingState,
       prepareRandomDocument: prepareRandomDocument,
@@ -52,7 +52,7 @@
       });
     }
     function getFilterParamsAsString(params) {
-      return "?" + $httpParamSerializerJQLike(removeEmptyValueFilter(getFilterParams(params)));
+      return "?" + jQueryLikeParamSerializerFilter(removeEmptyValueFilter(getFilterParams(params)));
     }
     function getFilterParams(params) {
       params = params || $state.params;
@@ -98,18 +98,6 @@
           return $q.reject(view);
         });
       });
-    }
-
-    function prepareDropboxItem(isSpatial, ddoc) {
-      return function (value, key) {
-        return {viewId: key, documentId: ddoc.doc.meta.id, name: key + (isSpatial ? " [Spatial]" : ""), isSpatial: isSpatial};
-      };
-    }
-
-    function prepareDdocDropboxItem(ddoc) {
-      return ([{name: ddoc.doc.meta.id, isTitle: true}])
-        .concat(_.map(ddoc.doc.json.spatial, prepareDropboxItem(true, ddoc)))
-        .concat(_.map(ddoc.doc.json.views, prepareDropboxItem(false, ddoc)));
     }
 
     function prepareDocForCodeMirror(doc) {
@@ -184,33 +172,7 @@
       });
     }
     function getEmptyViewState(params) {
-      return prepareViewsSelectbox(params).then(function (rv) {
-        rv.isEmptyState = true;
-        return rv;
-      });
-    }
-
-    function prepareViewsSelectbox(params) {
-      return mnViewsListService.getDdocsByType(params.bucket).then(function (ddocs) {
-        var rv = {};
-        if (ddocs.rows && ddocs.rows.length) {
-          var viewsNames = [];
-          if (ddocs.development.length) {
-            viewsNames.push({name: "Development Views", isTitle: true});
-            viewsNames = viewsNames.concat(_.map(ddocs.development, prepareDdocDropboxItem));
-          }
-          if (ddocs.production.length) {
-            viewsNames.push({name: "Production Views", isTitle: true});
-            viewsNames = viewsNames.concat(_.map(ddocs.production, prepareDdocDropboxItem));
-          }
-          rv.viewsNames = _.flatten(viewsNames);
-          rv.viewsNames.selected = _.find(rv.viewsNames, function (item) {
-            return item.viewId === params.viewId && item.documentId === params.documentId;
-          });
-          rv.ddocs = ddocs;
-        }
-        return rv;
-      })
+      return {isEmptyState: true};
     }
 
     function getViewsEditingState(params) {
@@ -219,11 +181,12 @@
         url: "/couchBase/" + buildViewUrl(params)
       }).then(function () {
         return $q.all([
-          prepareViewsSelectbox(params),
+          mnViewsListService.getDdocsByType(params.bucket),
           mnPoolDefault.get()
         ]).then(function (resp) {
-          var rv = resp[0];
+          var rv = {};
           var poolDefault = resp[1];
+          rv.ddocs = resp[0];
           rv.capiBase = poolDefault.capiBase;
           rv.isDevelopmentDocument = mnViewsListService.isDevModeDoc(params.documentId)
           if (rv.ddocs.rows.length) {

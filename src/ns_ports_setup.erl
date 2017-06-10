@@ -252,33 +252,34 @@ do_per_bucket_moxi_specs(Config) ->
               end
       end, [], BucketConfigs).
 
-dynamic_children(shutdown) ->
+dynamic_children(Mode) ->
     Config = ns_config:get(),
 
-    Specs = [memcached_spec(Config),
-             moxi_spec(Config),
-             saslauthd_port_spec(Config),
-             per_bucket_moxi_specs(Config),
-             maybe_create_ssl_proxy_spec(Config)],
+    Specs = do_dynamic_children(Mode, Config),
+    expand_specs(lists:flatten(Specs), Config).
 
-    lists:flatten(Specs);
-dynamic_children(normal) ->
-    Config = ns_config:get(),
+do_dynamic_children(shutdown, Config) ->
+    [memcached_spec(),
+     moxi_spec(Config),
+     saslauthd_port_spec(Config),
+     per_bucket_moxi_specs(Config),
+     maybe_create_ssl_proxy_spec(Config)];
+do_dynamic_children(normal, Config) ->
+    [memcached_spec(),
+     moxi_spec(Config),
+     kv_node_projector_spec(Config),
+     index_node_spec(Config),
+     query_node_spec(Config),
+     saslauthd_port_spec(Config),
+     goxdcr_spec(Config),
+     per_bucket_moxi_specs(Config),
+     maybe_create_ssl_proxy_spec(Config),
+     fts_spec(Config),
+     cbas_spec(Config),
+     example_service_spec(Config)].
 
-    Specs = [memcached_spec(Config),
-             moxi_spec(Config),
-             run_via_goport(fun kv_node_projector_spec/1, Config),
-             run_via_goport(fun index_node_spec/1, Config),
-             run_via_goport(fun query_node_spec/1, Config),
-             saslauthd_port_spec(Config),
-             run_via_goport(fun goxdcr_spec/1, Config),
-             per_bucket_moxi_specs(Config),
-             maybe_create_ssl_proxy_spec(Config),
-             run_via_goport(fun fts_spec/1, Config),
-             run_via_goport_graceful_exit(fun cbas_spec/1, Config),
-             run_via_goport(fun example_service_spec/1, Config)],
-
-    lists:flatten(Specs).
+expand_specs(Specs, Config) ->
+    [expand_args(S, Config) || S <- Specs].
 
 query_node_spec(Config) ->
     case ns_cluster_membership:should_run_service(Config, n1ql, node()) of
@@ -304,7 +305,7 @@ query_node_spec(Config) ->
                         end,
             Spec = {'query', Command,
                     [DataStoreArg, HttpArg, CnfgStoreArg, EntArg] ++ HttpsArgs,
-                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                    [via_goport, exit_status, stderr_to_stdout,
                      {env, build_go_env_vars(Config, 'cbq-engine')},
                      {log, ?QUERY_LOG_FILENAME}]},
 
@@ -342,7 +343,7 @@ kv_node_projector_spec(Config) ->
                     "127.0.0.1:" ++ integer_to_list(RestPort)],
 
             Spec = {'projector', ProjectorCmd, Args,
-                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                    [via_goport, exit_status, stderr_to_stdout,
                      {log, ?PROJECTOR_LOG_FILENAME},
                      {env, build_go_env_vars(Config, projector)}]},
             [Spec]
@@ -386,7 +387,7 @@ create_goxdcr_spec(Config, Cmd, Upgrade) ->
         end,
 
     [{'goxdcr', Cmd, Args,
-      [use_stdio, exit_status, stderr_to_stdout, stream,
+      [via_goport, exit_status, stderr_to_stdout,
        {log, ?GOXDCR_LOG_FILENAME},
        {env, build_go_env_vars(Config, goxdcr)}]}].
 
@@ -428,6 +429,14 @@ index_node_spec(Config) ->
                             []
                     end,
             NodeUUID = binary_to_list(ns_config:uuid()),
+            HttpsArgs = case ns_config:search(Config, {node, node(), indexer_https_port}, undefined) of
+                            undefined ->
+                                [];
+                            Port ->
+                                ["--httpsPort=" ++ integer_to_list(Port),
+                                 "--certFile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
+                                 "--keyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
+                        end,
 
             Spec = {'indexer', IndexerCmd,
                     ["-vbuckets=" ++ integer_to_list(NumVBuckets),
@@ -440,8 +449,8 @@ index_node_spec(Config) ->
                      "-streamMaintPort=" ++ integer_to_list(StMaintPort),
                      "-storageDir=" ++ IdxDir2,
                      "-diagDir=" ++ MinidumpDir,
-                     "-nodeUUID=" ++ NodeUUID] ++ AddSM,
-                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                     "-nodeUUID=" ++ NodeUUID] ++ AddSM ++ HttpsArgs,
+                    [via_goport, exit_status, stderr_to_stdout,
                      {log, ?INDEXER_LOG_FILENAME},
                      {env, build_go_env_vars(Config, index)}]},
             [Spec]
@@ -469,7 +478,7 @@ saslauthd_port_spec(Config) ->
     case Cmd =/= false of
         true ->
             [{saslauthd_port, Cmd, [],
-              [use_stdio, exit_status, stderr_to_stdout, stream,
+              [use_stdio, exit_status, stderr_to_stdout,
                {env, build_go_env_vars(Config, saslauthd)}]}];
         _ ->
             []
@@ -502,122 +511,64 @@ format(Config, Name, Format, Keys) ->
                        end, Keys),
     lists:flatten(io_lib:format(Format, Values)).
 
-run_via_goport(SpecFun, Config) ->
-    Specs = case SpecFun(Config) of
-                [] ->
-                    [];
-                [Specs1] ->
-                    [expand_args(Specs1, Config)]
-            end,
-    lists:map(fun do_run_via_goport/1, Specs).
-
-do_run_via_goport({Name, Cmd, Args, Opts}) ->
-    GoportName =
-        case erlang:system_info(system_architecture) of
-            "win32" ->
-                "goport.exe";
-            _ ->
-                "goport"
-        end,
-
-    GoportPath = path_config:component_path(bin, GoportName),
-    GoportArgsEnv = binary_to_list(ejson:encode([list_to_binary(L) || L <- [Cmd | Args]])),
-
-    Env = proplists:get_value(env, Opts, []),
-    Env1 = [{"GOPORT_ARGS", GoportArgsEnv} | Env],
-
-    Opts1 = lists:keystore(env, 1, Opts, {env, Env1}),
-    {Name, GoportPath, [], Opts1}.
-
-run_via_goport_graceful_exit(SpecFun, Config) ->
-  Specs = case SpecFun(Config) of
-            [] ->
-              [];
-            [Specs1] ->
-              [expand_args(Specs1, Config)]
-          end,
-  lists:map(fun do_run_via_goport_graceful_exit/1, Specs).
-
-do_run_via_goport_graceful_exit({Name, Cmd, Args, Opts}) ->
-  GoportName =
-    case erlang:system_info(system_architecture) of
-      "win32" ->
-        "goport.exe";
-      _ ->
-        "goport"
-    end,
-
-  GoportPath = path_config:component_path(bin, GoportName),
-  GoportArgsEnv = binary_to_list(ejson:encode([list_to_binary(L) || L <- [Cmd | Args]])),
-
-  Env = proplists:get_value(env, Opts, []),
-  Env1 = [{"GOPORT_ARGS", GoportArgsEnv} | Env],
-
-  Opts1 = lists:keystore(env, 1, Opts, {env, Env1}),
-  {Name, GoportPath, ["-graceful-shutdown"], Opts1}.
-
 moxi_spec(Config) ->
     case ns_cluster_membership:should_run_service(Config, kv, node()) of
         true ->
-            do_moxi_spec(Config);
+            do_moxi_spec();
         false ->
             []
     end.
 
-do_moxi_spec(Config) ->
-    Spec = {moxi, path_config:component_path(bin, "moxi"),
-            ["-Z", {"port_listen=~B,default_bucket_name=default,downstream_max=1024,downstream_conn_max=4,"
-                    "connect_max_errors=5,connect_retry_interval=30000,"
-                    "connect_timeout=400,"
-                    "auth_timeout=100,cycle=200,"
-                    "downstream_conn_queue_timeout=200,"
-                    "downstream_timeout=5000,wait_queue_timeout=200",
-                    [port]},
-             "-z", {"url=http://127.0.0.1:~B/pools/default/saslBucketsStreaming",
-                    [{misc, this_node_rest_port, []}]},
-             "-p", "0",
-             "-Y", "y",
-             "-O", "stderr",
-             {"~s", [verbosity]}
-            ],
-            [{env, [{"EVENT_NOSELECT", "1"},
-                    {"MOXI_SASL_PLAIN_USR", {"~s", [{ns_moxi_sup, rest_user, []}]}},
-                    {"MOXI_SASL_PLAIN_PWD", {"~s", [{ns_moxi_sup, rest_pass, []}]}},
-                    {"http_proxy", ""}
-                   ]},
-             use_stdio, exit_status,
-             stderr_to_stdout,
-             stream]
-           },
+do_moxi_spec() ->
+    {moxi, path_config:component_path(bin, "moxi"),
+     ["-Z", {"port_listen=~B,default_bucket_name=default,downstream_max=1024,downstream_conn_max=4,"
+             "connect_max_errors=5,connect_retry_interval=30000,"
+             "connect_timeout=400,"
+             "auth_timeout=100,cycle=200,"
+             "downstream_conn_queue_timeout=200,"
+             "downstream_timeout=5000,wait_queue_timeout=200",
+             [port]},
+      "-z", {"url=http://127.0.0.1:~B/pools/default/saslBucketsStreaming",
+             [{misc, this_node_rest_port, []}]},
+      "-p", "0",
+      "-Y", "y",
+      "-O", "stderr",
+      {"~s", [verbosity]}
+     ],
+     [{env, [{"EVENT_NOSELECT", "1"},
+             {"MOXI_SASL_PLAIN_USR", {"~s", [{ns_moxi_sup, rest_user, []}]}},
+             {"MOXI_SASL_PLAIN_PWD", {"~s", [{ns_moxi_sup, rest_pass, []}]}},
+             {"http_proxy", ""}
+            ]},
+      use_stdio, exit_status,
+      stderr_to_stdout,
+      stream]
+    }.
 
-    [expand_args(Spec, Config)].
-
-memcached_spec(Config) ->
-    Spec = {memcached, path_config:component_path(bin, "memcached"),
-            ["-C", {"~s", [{memcached, config_path}]}],
-            [{env, [{"EVENT_NOSELECT", "1"},
-                    %% NOTE: bucket engine keeps this number of top keys
-                    %% per top-keys-shard. And number of shards is hard-coded to 8
-                    %%
-                    %% So with previous setting of 100 we actually got 800
-                    %% top keys every time. Even if we need just 10.
-                    %%
-                    %% See hot_keys_keeper.erl TOP_KEYS_NUMBER constant
-                    %%
-                    %% Because of that heavy sharding we cannot ask for
-                    %% very small number, which would defeat usefulness
-                    %% LRU-based top-key maintenance in memcached. 5 seems
-                    %% not too small number which means that we'll deal
-                    %% with 40 top keys.
-                    {"MEMCACHED_TOP_KEYS", "5"},
-                    {"CBSASL_PWFILE", {"~s", [{isasl, path}]}}]},
-             use_stdio,
-             stderr_to_stdout, exit_status,
-             port_server_dont_start,
-             stream]
-           },
-
-    [expand_args(Spec, Config)].
+memcached_spec() ->
+    {memcached, path_config:component_path(bin, "memcached"),
+     ["-C", {"~s", [{memcached, config_path}]}],
+     [{env, [{"EVENT_NOSELECT", "1"},
+             %% NOTE: bucket engine keeps this number of top keys
+             %% per top-keys-shard. And number of shards is hard-coded to 8
+             %%
+             %% So with previous setting of 100 we actually got 800
+             %% top keys every time. Even if we need just 10.
+             %%
+             %% See hot_keys_keeper.erl TOP_KEYS_NUMBER constant
+             %%
+             %% Because of that heavy sharding we cannot ask for
+             %% very small number, which would defeat usefulness
+             %% LRU-based top-key maintenance in memcached. 5 seems
+             %% not too small number which means that we'll deal
+             %% with 40 top keys.
+             {"MEMCACHED_TOP_KEYS", "5"},
+             {"CBSASL_PWFILE", {"~s", [{isasl, path}]}}]},
+      use_stdio,
+      stderr_to_stdout, exit_status,
+      port_server_dont_start,
+      stream]
+    }.
 
 fts_spec(Config) ->
     FtCmd = find_executable("cbft"),
@@ -644,6 +595,14 @@ fts_spec(Config) ->
                                  "-tlsKeyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
                         end,
             {ok, FTSMemoryQuota} = ns_storage_conf:get_memory_quota(Config, fts),
+            MaxReplicasAllowed = case cluster_compat_mode:is_enterprise() of
+                                     true -> 3;
+                                     false -> 0
+                                 end,
+            BucketTypesAllowed = case cluster_compat_mode:is_enterprise() of
+                                     true -> "membase:ephemeral";
+                                     false -> "membase"
+                                 end,
             Options = "startCheckServer=skip," ++
                       "slowQueryLogTimeout=5s," ++
                       "defaultMaxPartitionsPerPIndex=171," ++
@@ -651,7 +610,9 @@ fts_spec(Config) ->
                       "failoverAssignAllPrimaries=false," ++
                       "hideUI=true," ++
                       "cbaudit=" ++ atom_to_list(cluster_compat_mode:is_enterprise()) ++ "," ++
-                      "ftsMemoryQuota=" ++ integer_to_list(FTSMemoryQuota * 1024000),
+                      "ftsMemoryQuota=" ++ integer_to_list(FTSMemoryQuota * 1024000) ++ "," ++
+                      "maxReplicasAllowed=" ++ integer_to_list(MaxReplicasAllowed) ++ "," ++
+                      "bucketTypesAllowed=" ++ BucketTypesAllowed,
             Spec = {fts, FtCmd,
                     [
                      "-cfg=metakv",
@@ -664,7 +625,7 @@ fts_spec(Config) ->
                      "-extra=" ++ io_lib:format("~s:~b", [Host, NsRestPort]),
                      "-options=" ++ Options
                     ] ++ BindHttps,
-                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                    [via_goport, exit_status, stderr_to_stdout,
                      {log, ?FTS_LOG_FILENAME},
                      {env, build_go_env_vars(Config, fts)}]},
             [Spec]
@@ -710,7 +671,7 @@ cbas_spec(Config) ->
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
                      "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
                     ] ++ HttpsOptions,
-                    [use_stdio, exit_status, stderr_to_stdout, stream,
+                    [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
                       {env, build_go_env_vars(Config, cbas)}]},
             [Spec]
@@ -729,8 +690,7 @@ example_service_spec(Config) ->
             Args = ["-node-id", binary_to_list(NodeUUID),
                     "-host", Host ++ ":" ++ integer_to_list(Port)],
             Spec = {example, CacheCmd, Args,
-                    [use_stdio, exit_status,
-                     stderr_to_stdout, stream,
+                    [via_goport, exit_status, stderr_to_stdout,
                      {env, build_go_env_vars(Config, example)}]},
             [Spec];
         false ->
@@ -738,11 +698,12 @@ example_service_spec(Config) ->
     end.
 
 run_cbsasladm(Iterations) ->
-    [{cbsasladm, Cmd, [], Opts}] =
-        run_via_goport(fun (_) ->
-                               [{cbsasladm, find_executable("cbsasladm"),
-                                 ["-i", integer_to_list(Iterations), "pwconv", "-", "-"],
-                                 [use_stdio, exit_status, stream]}]
-                       end, undefined),
-    Opts1 = [{args, ["-graceful-shutdown", "-proxy-stdin"]} | Opts],
-    open_port({spawn_executable, Cmd}, Opts1).
+    Args = ["-i", integer_to_list(Iterations), "pwconv", "-", "-"],
+
+    {ok, P} =
+        goport:start_link(find_executable("cbsasladm"),
+                          [exit_status, graceful_shutdown, stderr_to_stdout,
+                           stream, binary,
+                           {args, Args},
+                           {name, false}]),
+    P.

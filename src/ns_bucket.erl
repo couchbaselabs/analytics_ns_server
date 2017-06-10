@@ -82,8 +82,8 @@
          past_vbucket_maps/1,
          config_to_map_options/1,
          needs_rebalance/2,
+         can_have_views/1,
          bucket_view_nodes/1,
-         bucket_view_nodes/2,
          bucket_config_view_nodes/1,
          config_upgrade_to_spock/1]).
 
@@ -120,13 +120,14 @@ config_string(BucketName) ->
                 NumThreads = proplists:get_value(num_threads, BucketConfig, 3),
                 ItemEvictionPolicy = memcached_item_eviction_policy(BucketConfig),
                 EphemeralFullPolicy = memcached_ephemeral_full_policy(BucketConfig),
+                EphemeralPurgeAge = ephemeral_metadata_purge_age(BucketConfig),
                 ConflictResolutionType = conflict_resolution_type(BucketConfig),
                 DriftThresholds = drift_thresholds(BucketConfig),
                 StorageMode = storage_mode(BucketConfig),
                 %% MemQuota is our per-node bucket memory limit
                 CFG =
                     io_lib:format(
-                      "ht_size=~B;ht_locks=~B;"
+                      "ht_locks=~B;"
                       "max_size=~B;"
                       "dbname=~s;"
                       "backend=couchdb;couch_bucket=~s;max_vbuckets=~B;"
@@ -135,9 +136,6 @@ config_string(BucketName) ->
                       "conflict_resolution_type=~s;"
                       "bucket_type=~s;~s",
                       [proplists:get_value(
-                         ht_size, BucketConfig,
-                         misc:getenv_int("MEMBASE_HT_SIZE", 3079)),
-                       proplists:get_value(
                          ht_locks, BucketConfig,
                          misc:getenv_int("MEMBASE_HT_LOCKS", 47)),
                        MemQuota,
@@ -151,8 +149,10 @@ config_string(BucketName) ->
                        storage_mode_to_bucket_type(StorageMode),
                        eviction_policy_cfg_string(BucketConfig, ItemEvictionPolicy,
                                                   EphemeralFullPolicy)]),
-                {CFG, {MemQuota, DBSubDir, NumThreads, ItemEvictionPolicy, EphemeralFullPolicy,
-                       DriftThresholds}, DBSubDir};
+                CFG1 = metadata_purge_age_cfg_string(EphemeralPurgeAge) ++ CFG,
+                CFG2 = ht_size_cfg_string(BucketConfig) ++ CFG1,
+                {CFG2, {MemQuota, DBSubDir, NumThreads, ItemEvictionPolicy, EphemeralFullPolicy,
+                       DriftThresholds, EphemeralPurgeAge}, DBSubDir};
             memcached ->
                 {io_lib:format("cache_size=~B;uuid=~s", [MemQuota, BucketUUID]),
                  MemQuota, undefined}
@@ -299,6 +299,35 @@ memcached_ephemeral_full_policy(BucketConfig) ->
             end;
         _ ->
             undefined
+    end.
+
+ephemeral_metadata_purge_age(BucketConfig) ->
+    case storage_mode(BucketConfig) of
+        ephemeral ->
+            %% Purge interval is accepted in # of days but the ep-engine
+            %% needs it to be expressed in seconds.
+            Val = proplists:get_value(purge_interval, BucketConfig,
+                                      ?DEFAULT_EPHEMERAL_PURGE_INTERVAL_DAYS),
+            erlang:round(Val * 24 * 3600);
+        _ ->
+            undefined
+    end.
+
+metadata_purge_age_cfg_string(PurgeAge) ->
+    case PurgeAge of
+        undefined ->
+            [];
+        _ ->
+            io_lib:format("ephemeral_metadata_purge_age=~p;", [PurgeAge])
+    end.
+
+ht_size_cfg_string(BucketConfig) ->
+    case proplists:get_value(ht_size, BucketConfig,
+                             misc:getenv_int("MEMBASE_HT_SIZE", 0)) of
+        0 ->
+            [];
+        X when is_integer(X) ->
+            io_lib:format("ht_size=~B;", [X])
     end.
 
 -spec storage_mode([{_,_}]) -> atom().
@@ -982,6 +1011,9 @@ is_compatible_past_map(Nodes, BucketConfig, Map) ->
 
     lists:member(Map, Matching).
 
+can_have_views(BucketConfig) ->
+    storage_mode(BucketConfig) =:= couchstore.
+
 bucket_view_nodes(Bucket) ->
     bucket_view_nodes(Bucket, ns_config:latest()).
 
@@ -994,10 +1026,10 @@ bucket_view_nodes(Bucket, Config) ->
     end.
 
 bucket_config_view_nodes(BucketConfig) ->
-    case bucket_type(BucketConfig) of
-        membase ->
+    case can_have_views(BucketConfig) of
+        true ->
             lists:sort(ns_bucket:bucket_nodes(BucketConfig));
-        memcached ->
+        false ->
             []
     end.
 

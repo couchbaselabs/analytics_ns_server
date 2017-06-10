@@ -2,7 +2,7 @@
   <div
      min-height="100px"
      mn-spinner="!analyticsListGraphCtl.selectedStat || analyticsCtl.viewLoading">
-    <h4 class="initialcaps width-12 text-center margin-top1 margin-bottom-half">{{analyticsListGraphCtl.selectedStat.title}}&nbsp;
+    <h4 class="initialcaps width-12 text-center margin-top-1 margin-bottom-half">{{analyticsListGraphCtl.selectedStat.title}}&nbsp;
       <span
          ng-show="analyticsListGraphCtl.selectedStat.visiblePeriod"
          class="text-smaller defaultcaps">
@@ -11,8 +11,9 @@
     </h4>
     <span
        class="text-center margin-top4"
+       style="position: absolute; top: 40%; left: 30%;"
        ng-show="!analyticsListGraphCtl.selectedStat.visiblePeriod">
-      No samples, yet
+      There are currently no statistics to show.
     </span>
     <div
        class="inline margin-right-1 text-smaller"
@@ -24,7 +25,7 @@
   </div>
   <div
      ng-hide="!analyticsListGraphCtl.selectedStat"
-     ng-if="rbac.cluster.bucket[analyticsCtl.buckets.bucketsNames.selected].stats.read"
+     ng-if="rbac.cluster.bucket[analyticsCtl.currentBucket].stats.read"
      class="pills pills-small width-1 margin-right-1">
     <a ui-sref="{zoom: 'minute'}" ui-sref-active="selected">Minute</a>
     <a ui-sref="{zoom: 'hour'}" ui-sref-active="selected">Hour</a>
@@ -33,12 +34,4 @@
     <a ui-sref="{zoom: 'month'}" ui-sref-active="selected">Month</a>
     <a ui-sref="{zoom: 'year'}" ui-sref-active="selected">Year</a>
   </div>
-<!-- this is probably redundant with the tooltips
-  <div
-     ng-show="!analyticsCtl.state.isEmptyState"
-     class="width-2 text-smaller">
-    <strong class="text-larger">* </strong>
-    {{analyticsListGraphCtl.selectedStat.desc}}
-  </div>
--->
 </div>

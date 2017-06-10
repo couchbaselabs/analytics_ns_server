@@ -28,7 +28,8 @@
       'mnSettingsAutoFailoverService',
       'mnTasksDetails',
       'mnWarmupProgress',
-      'mnElementCrane'
+      'mnElementCrane',
+      'mnSearch'
     ])
     .controller('mnServersController', mnServersController)
     .filter("formatFailoverWarnings", formatFailoverWarnings);
@@ -36,15 +37,15 @@
   function formatFailoverWarnings() {
     return function (warning) {
       switch (warning) {
-      case 'rebalanceNeeded': return 'Rebalance required, some data is not currently replicated!';
-      case 'hardNodesNeeded': return 'At least two servers with the data service are required to provide replication!';
-      case 'softNodesNeeded': return 'Additional active servers required to provide the desired number of replicas!';
-      case 'softRebalanceNeeded': return 'Rebalance recommended, some data does not have the desired replicas configuration!';
+      case 'rebalanceNeeded': return 'Rebalance required, some data is not currently replicated.';
+      case 'hardNodesNeeded': return 'At least two servers with the data service are required to provide replication.';
+      case 'softNodesNeeded': return 'Additional active servers required to provide the desired number of replicas.';
+      case 'softRebalanceNeeded': return 'Rebalance recommended, some data does not have the desired replicas configuration.';
       }
     };
   }
 
-  function mnServersController($scope, $state, $uibModal, mnPoolDefault, mnPoller, mnServersService, mnHelper, mnGroupsService, mnPromiseHelper, mnPools, mnSettingsAutoFailoverService, mnTasksDetails, permissions) {
+  function mnServersController($scope, $state, $uibModal, mnPoolDefault, mnPoller, mnServersService, mnHelper, mnGroupsService, mnPromiseHelper, mnPools, mnSettingsAutoFailoverService, mnTasksDetails, permissions, mnFormatServicesFilter) {
     var vm = this;
     vm.mnPoolDefault = mnPoolDefault.latestValue();
 
@@ -52,8 +53,63 @@
     vm.onStopRecovery = onStopRecovery;
     vm.postRebalance = postRebalance;
     vm.addServer = addServer;
+    vm.listFiter = listFiter;
+    vm.filterField = "";
+    vm.sortByGroup = sortByGroup
+
+    function sortByGroup(node) {
+      return vm.getGroupsByHostname[node.hostname] && vm.getGroupsByHostname[node.hostname].name;
+    }
+
 
     activate();
+
+    //filter by multiple strictly defined fields in the node
+    //e.g filterField -> "apple 0.0.0.0 data"
+    //will return all kv nodes which run on macos 0.0.0.0 host
+    function listFiter(node) {
+      if (vm.filterField === "") {
+        return true;
+      }
+
+      var interestingFields = ["hostname", "status"];
+      var l2 = interestingFields.length;
+      var l3 = node.services.length;
+      var i2;
+      var i3;
+      var searchFiled;
+      var searchValue = vm.filterField.toLowerCase();
+      var rv = false;
+
+      //look in services
+      loop3:
+      for (i3 = 0; i3 < l3; i3++) {
+        if (mnFormatServicesFilter(node.services[i3])
+            .toLowerCase()
+            .indexOf(searchValue) > -1) {
+          rv = true;
+          break loop3;
+        }
+      }
+
+      //look in interestingFields
+      loop2:
+      for (i2 = 0; i2 < l2; i2++) {
+        searchFiled = interestingFields[i2];
+        if (node[searchFiled].toLowerCase().indexOf(searchValue) > -1) {
+          rv = true;
+          break loop2;
+        }
+      }
+
+      //look in group name
+      if (!rv && vm.getGroupsByHostname && vm.getGroupsByHostname[node.hostname] &&
+          vm.getGroupsByHostname[node.hostname].name.toLowerCase().indexOf(searchValue) > -1) {
+        rv = true;
+      }
+
+      return rv;
+    }
 
     function activate() {
       mnHelper.initializeDetailsHashObserver(vm, 'openedServers', 'app.admin.servers.list');

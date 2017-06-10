@@ -3,26 +3,32 @@
    min-height="110px">
   <div class="cbui-table" mn-sortable-table>
     <div class="cbui-table-header">
-      <span
-         mn-sortable-title="hostname"
-         sort-by-default="true"
-         class="cbui-table-cell flex-grow-1-5">name</span>
-      <span
-         mn-sortable-title="group"
-         sort-function="serversCtl.sortByGroup"
-         class="cbui-table-cell flex-grow-1-5">
-        {{ poolDefault.isGroupsAvailable && rbac.cluster.server_groups.read ? "group" : " " }}
+
+      <span class="cbui-table-cell flex-grow-2-5">
+        <span
+           mn-sortable-title="hostname"
+           sort-by-default="true"
+           class="sorter margin-right-4">
+          name
+        </span>
+        <span mn-sortable-title="group" sort-function="serversCtl.sortByGroup(value)" class="sorter">
+          {{ poolDefault.isGroupsAvailable && rbac.cluster.server_groups.read ? "group" : " " }}
+        </span>
       </span>
-      <span class="cbui-table-cell flex-grow-2-5" mn-sortable-title="services">services</span>
-      <span class="cbui-table-cell">CPU</span>
-      <span class="cbui-table-cell">RAM</span>
-      <span class="cbui-table-cell">swap</span>
-      <span class="cbui-table-cell">disk used</span>
-      <span class="cbui-table-cell">items</span>
-      <span class="cbui-table-cell flex-grow-1-5"> </span>
+      <span class="cbui-table-cell flex-grow-1-5 resp-hide-xsml">
+        <span mn-sortable-title="services" class="sorter">
+          services
+        </span>
+      </span>
+      <span class="cbui-table-cell flex-grow-half resp-hide-sml">CPU</span>
+      <span class="cbui-table-cell flex-grow-half resp-hide-sml">RAM</span>
+      <span class="cbui-table-cell flex-grow-half resp-hide-med">swap</span>
+      <span class="cbui-table-cell flex-grow-half resp-hide-med">disk used</span>
+      <span class="cbui-table-cell resp-hide-med">items</span>
+      <span class="cbui-table-cell resp-hide-sml"></span>
     </div>
     <div
-       ng-repeat="node in serversCtl.nodes.allNodes | orderBy:mnSortableTable.sortableTableProperties.orderBy:mnSortableTable.sortableTableProperties.invert track by node.otpNode"
+       ng-repeat="node in serversCtl.nodes.allNodes | orderBy:mnSortableTable.sortableTableProperties.orderBy:mnSortableTable.sortableTableProperties.invert | filter:serversCtl.listFiter track by node.otpNode"
        ui-view="item">
     </div>
 

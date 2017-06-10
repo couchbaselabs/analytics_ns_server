@@ -71,7 +71,10 @@ validate_storage_mode(State) ->
     %% Do not allow:
     %% - changing index storage mode to mem optimized in community edition
     %% - changing index storage mode when there are nodes running index
-    %%   service in the cluster
+    %%   service in the cluster.
+    %% - changing index storage mode back to forestdb after having it set to either
+    %%   memory_optimized or plasma.
+    %% - setting the storage mode to forestdb on a newly configured spock cluster.
     IndexErr = "Changing the optimization mode of global indexes is not supported when index service nodes are present in the cluster. Please remove all index service nodes to change this option.",
 
     OldValue = index_settings_manager:get(storageMode),
@@ -84,9 +87,15 @@ validate_storage_mode(State) ->
                       is_storage_mode_acceptable(Value);
                   false ->
                       %% Note it is not sufficient to check service_active_nodes(index) because the
-                      %% index nodes could be down or failed over.
+                      %% index nodes could be down or failed over. However, we should allow the
+                      %% storage mode to be changed if there is an index node in "inactiveAdded"
+                      %% state (the state set when a node has been added but the rebalance has not
+                      %% been run yet).
                       NodesWanted = ns_node_disco:nodes_wanted(),
-                      IndexNodes = ns_cluster_membership:service_nodes(NodesWanted, index),
+                      AllIndexNodes = ns_cluster_membership:service_nodes(NodesWanted, index),
+                      InactiveAddedNodes = ns_cluster_membership:inactive_added_nodes(),
+                      IndexNodes = AllIndexNodes -- InactiveAddedNodes,
+
                       case IndexNodes of
                           [] ->
                               is_storage_mode_acceptable(Value);
@@ -106,7 +115,12 @@ is_storage_mode_acceptable(Value) ->
 
     case Value of
         ?INDEX_STORAGE_MODE_FORESTDB ->
-            ok;
+            case cluster_compat_mode:is_cluster_spock() of
+                true ->
+                    ReportError("Storage mode cannot be set to 'forestdb' in Spock.");
+                false ->
+                    ok
+            end;
         ?INDEX_STORAGE_MODE_MEMORY_OPTIMIZED ->
             case cluster_compat_mode:is_enterprise() of
                 true ->
