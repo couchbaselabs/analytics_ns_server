@@ -662,14 +662,15 @@ cbas_spec(Config) ->
             Spec = {cbas, CBASCmd,
                     [
                      "-uuid=" ++ NodeUUID,
-                     "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
+                     "-serverAddress=127.0.0.1",
+                     "-serverPort=" ++ integer_to_list(NsRestPort),
                      "-bindHttpAddress=" ++ Host,
                      "-bindHttpPort=" ++ integer_to_list(CBASHttpPort),
                      "-dataDir=" ++ CBASDir,
                      "-cbasExecutable=" ++ CBASCmd,
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
-                     "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024000)
+                     "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024 * 1024)
                     ] ++ HttpsOptions,
                     [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
