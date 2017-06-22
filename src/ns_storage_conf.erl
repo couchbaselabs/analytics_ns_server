@@ -552,8 +552,7 @@ check_service_quotas([{Service, Quota} | Rest], Config) ->
 -define(MIN_INDEX_QUOTA, 256).
 -define(MIN_FTS_QUOTA, 256).
 -define(MAX_DEFAULT_FTS_QUOTA, 512).
--define(MIN_CBAS_QUOTA, 256).
--define(MAX_DEFAULT_CBAS_QUOTA, 512).
+-define(MIN_CBAS_QUOTA, 1024).
 
 check_service_quota(kv, Quota, Config) ->
     MinMemoryMB0 = ?MIN_BUCKET_QUOTA,
@@ -693,7 +692,7 @@ default_quota(Service, Memory, Max) ->
     end.
 
 do_default_quota(kv, Memory) ->
-    KvQuota = (Memory * 3) div 5,
+    KvQuota = (Memory * 2) div 5,
     {?MIN_BUCKET_QUOTA, KvQuota};
 do_default_quota(index, Memory) ->
     IndexQuota = (Memory * 3) div 5,
@@ -702,11 +701,11 @@ do_default_quota(fts, Memory) ->
     FTSQuota = min(Memory div 5, ?MAX_DEFAULT_FTS_QUOTA),
     {?MIN_FTS_QUOTA, FTSQuota};
 do_default_quota(cbas, Memory) ->
-    CBASQuota = min(Memory div 5, ?MAX_DEFAULT_CBAS_QUOTA),
+    CBASQuota = (Memory * 2) div 3,
     {?MIN_CBAS_QUOTA, CBASQuota}.
 
 services_ranking() ->
-    [kv, index, fts, cbas].
+    [kv, cbas, index, fts].
 
 default_quotas(Services) ->
     %% this is actually bogus, because nodes can be heterogeneous; but that's
