@@ -670,7 +670,7 @@ cbas_spec(Config) ->
                      "-cbasExecutable=" ++ CBASCmd,
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
-                     "-memoryQuota=" ++ integer_to_list(CBASMemoryQuota * 1024 * 1024)
+                     "-memoryQuotaMb=" ++ integer_to_list(CBASMemoryQuota)
                     ] ++ HttpsOptions,
                     [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
