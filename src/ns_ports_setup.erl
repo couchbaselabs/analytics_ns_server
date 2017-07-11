@@ -643,6 +643,7 @@ cbas_spec(Config) ->
             NsRestPort = misc:node_rest_port(Config, node()),
             CBASHttpPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
             CBASCCHttpPort = ns_config:search(Config, {node, node(), cbas_cc_http_port}, 8200),
+            CBASAuthPort = ns_config:search(Config, {node, node(), cbas_auth_port}, 8210),
 
             DebugPort = ns_config:search(Config, {node, node(), cbas_debug_port}, -1),
 
@@ -670,7 +671,8 @@ cbas_spec(Config) ->
                      "-cbasExecutable=" ++ CBASCmd,
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
-                     "-memoryQuotaMb=" ++ integer_to_list(CBASMemoryQuota)
+                     "-memoryQuotaMb=" ++ integer_to_list(CBASMemoryQuota),
+                     "-authPort=" ++ integer_to_list(CBASAuthPort)
                     ] ++ HttpsOptions,
                     [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
