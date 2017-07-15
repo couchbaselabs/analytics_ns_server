@@ -650,6 +650,7 @@ cbas_spec(Config) ->
             {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
             CBASDir = filename:join(IdxDir, "@analytics"),
             ok = misc:ensure_writable_dir(CBASDir),
+            {ok, LogDir} = application:get_env(ns_server, error_logger_mf_dir),
             {_, Host} = misc:node_name_host(node()),
             HttpsOptions = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
                             undefined ->
@@ -672,7 +673,8 @@ cbas_spec(Config) ->
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
                      "-memoryQuotaMb=" ++ integer_to_list(CBASMemoryQuota),
-                     "-authPort=" ++ integer_to_list(CBASAuthPort)
+                     "-authPort=" ++ integer_to_list(CBASAuthPort),
+                     "-logDir=" ++ LogDir
                     ] ++ HttpsOptions,
                     [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
