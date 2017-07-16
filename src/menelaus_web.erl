@@ -636,7 +636,7 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                      fun menelaus_web_buckets:handle_bucket_create/2,
                      ["default"]};
                 ["pools", "default", "buckets", Id, "docs", DocId] ->
-                    {{[{bucket, Id}, data, docs], write},
+                    {{[{bucket, Id}, data, docs], upsert},
                      fun menelaus_web_crud:handle_post/3, [Id, DocId]};
                 ["pools", "default", "buckets", Id, "controller", "doFlush"] ->
                     {{[{bucket, Id}], flush},
@@ -752,7 +752,7 @@ get_action(Req, {AppRoot, IsSSL, Plugins}, Path, PathTokens) ->
                       {[xdcr, remote_clusters], write},
                       fun menelaus_web_remote_clusters:handle_remote_cluster_delete/2, [Id]);
                 ["pools", "default", "buckets", Id, "docs", DocId] ->
-                    {{[{bucket, Id}, data, docs], write},
+                    {{[{bucket, Id}, data, docs], delete},
                      fun menelaus_web_crud:handle_delete/3, [Id, DocId]};
                 ["controller", "cancelXCDR", XID] ->
                     goxdcr_rest:spec(
@@ -891,12 +891,10 @@ handle_ui_root(AppRoot, Path, UiCompatVersion, Plugins, Req)
     menelaus_util:reply_ok(
       Req,
       "text/html; charset=utf8",
-      menelaus_pluggable_ui:inject_head_fragments(Filename, UiCompatVersion, Plugins),
-      [{"Cache-Control", "must-revalidate"}]);
+      menelaus_pluggable_ui:inject_head_fragments(Filename, UiCompatVersion, Plugins));
 handle_ui_root(AppRoot, Path, ?VERSION_41, [], Req) ->
     menelaus_util:serve_static_file(Req, {AppRoot, Path},
-                                    "text/html; charset=utf8",
-                                    [{"Cache-Control", "must-revalidate"}]).
+                                    "text/html; charset=utf8", []).
 
 handle_serve_file(AppRoot, Path, MaxAge, Req) ->
     menelaus_util:serve_file(
@@ -1488,14 +1486,14 @@ do_build_pool_info(Id, CanIncludeOtpCookie, InfoLevel, Stability, LocalAddr) ->
                                   [{"v", menelaus_web_rbac:check_permissions_url_version(Config)}])},
                  {serverGroupsUri, <<"/pools/default/serverGroups?v=",
                                      (list_to_binary(integer_to_list(GroupsV)))/binary>>},
-                 {clusterName, list_to_binary(get_cluster_name())}],
+                 {clusterName, list_to_binary(get_cluster_name())},
+                 {balanced, ns_cluster_membership:is_balanced()}],
 
     PropList1 = build_memory_quota_info(Config) ++ PropList0,
     PropList2 =
         case InfoLevel of
             for_ui ->
-                [{balanced, ns_cluster_membership:is_balanced()},
-                 {failoverWarnings, ns_bucket:failover_warnings()},
+                [{failoverWarnings, ns_bucket:failover_warnings()},
                  {goxdcrEnabled, cluster_compat_mode:is_goxdcr_enabled(Config)},
                  {ldapEnabled, cluster_compat_mode:is_ldap_enabled()}
                  | PropList1];
@@ -1813,14 +1811,6 @@ streaming_inner(F, HTTPRes, LastRes) ->
     end,
     Res.
 
-consume_watcher_notifies() ->
-    receive
-        notify_watcher ->
-            consume_watcher_notifies()
-    after 0 ->
-            ok
-    end.
-
 handle_streaming(F, Req, HTTPRes, LastRes) ->
     Res =
         try streaming_inner(F, HTTPRes, LastRes)
@@ -1834,7 +1824,7 @@ handle_streaming_wakeup(F, Req, HTTPRes, Res) ->
     receive
         notify_watcher ->
             timer:sleep(50),
-            consume_watcher_notifies(),
+            misc:flush(notify_watcher),
             ok;
         _ ->
             exit(normal)

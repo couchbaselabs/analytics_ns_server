@@ -73,7 +73,8 @@
           sock = still_connecting :: port() | still_connecting,
           timer::any(),
           work_requests = [],
-          warmup_stats = [] :: [{binary(), binary()}]
+          warmup_stats = [] :: [{binary(), binary()}],
+          check_config_pid = undefined :: undefined | pid()
          }).
 
 %% external API
@@ -104,7 +105,6 @@
          warmup_stats/1,
          topkeys/1,
          raw_stats/5,
-         sync_bucket_config/1,
          flush/1,
          set/5,
          ready_nodes/4,
@@ -113,9 +113,6 @@
          get_meta/3,
          update_with_rev/7,
          get_seqno_stats/2,
-         connect_and_send_isasl_refresh/0,
-         connect_and_send_ssl_certs_refresh/0,
-         connect_and_send_rbac_refresh/0,
          eval/2,
          get_mass_dcp_docs_estimate/2,
          get_dcp_docs_estimate/3,
@@ -133,6 +130,9 @@
 
 %% for ns_memcached_sockets_pool only
 -export([connect/0]).
+
+%% for memcached_file_refresh only
+-export([connect/1]).
 
 %% for diagnostics/debugging
 -export([perform_very_long_call/2]).
@@ -309,10 +309,6 @@ handle_call(mark_warmed, _From, #state{status=Status,
         end,
 
     {reply, Reply, State#state{status=NewStatus}};
-handle_call(sync_bucket_config = Msg, _From, State) ->
-    StartTS = os:timestamp(),
-    handle_info(check_config, State),
-    verify_report_long_call(StartTS, StartTS, State, Msg, {reply, ok, State});
 handle_call(warmup_stats, _From, State) ->
     {reply, State#state.warmup_stats, State};
 handle_call(Msg, From, State) ->
@@ -712,18 +708,14 @@ handle_info(check_started,
             {ok, S} = Stats,
             {noreply, State#state{warmup_stats = S}}
     end;
-handle_info(check_config, State) ->
+handle_info(check_config, #state{check_config_pid = undefined} = State) ->
     misc:flush(check_config),
-    StartTS = os:timestamp(),
-    ensure_bucket(State#state.sock, State#state.bucket),
-    Diff = timer:now_diff(os:timestamp(), StartTS),
-    if
-        Diff > ?SLOW_CALL_THRESHOLD_MICROS ->
-            ?log_debug("handle_info(ensure_bucket,..) took too long: ~p us", [Diff]);
-        true ->
-            ok
-    end,
+    Pid = proc_lib:start_link(erlang, apply, [fun run_check_config/2, [State#state.bucket, self()]]),
+    {noreply, State#state{check_config_pid = Pid}};
+handle_info(check_config, State) ->
     {noreply, State};
+handle_info({'EXIT', Pid, normal}, #state{check_config_pid = Pid} = State) ->
+    {noreply, State#state{check_config_pid = undefined}};
 handle_info({'EXIT', _, Reason} = Msg, State) ->
     ?log_debug("Got ~p. Exiting.", [Msg]),
     {stop, Reason, State};
@@ -803,6 +795,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%
 %% API
 %%
+
+run_check_config(Bucket, Parent) ->
+    proc_lib:init_ack(Parent, self()),
+    perform_very_long_call(
+      fun(Sock) ->
+              StartTS = os:timestamp(),
+              ok = ensure_bucket(Sock, Bucket),
+              Diff = timer:now_diff(os:timestamp(), StartTS),
+              if
+                  Diff > ?SLOW_CALL_THRESHOLD_MICROS ->
+                      ?log_debug("ensure_bucket took too long: ~p us", [Diff]);
+                  true ->
+                      ok
+              end,
+              {reply, ok}
+      end, Bucket).
 
 -spec active_buckets() -> [bucket_name()].
 active_buckets() ->
@@ -1106,9 +1114,6 @@ stats(Node, Bucket, Key) ->
 warmup_stats(Bucket) ->
     do_call(server(Bucket), warmup_stats, ?TIMEOUT).
 
-sync_bucket_config(Bucket) ->
-    do_call(server(Bucket), sync_bucket_config, infinity).
-
 -spec topkeys(bucket_name()) ->
                      {ok, [{nonempty_string(), [{atom(), integer()}]}]} |
                      mc_error().
@@ -1148,42 +1153,6 @@ get_seqno_stats(Bucket, VBucket) ->
               {reply, Stats}
       end, Bucket).
 
-connect_and_send_isasl_refresh() ->
-    case connect(1) of
-        {ok, Sock}  ->
-            try
-                ok = mc_client_binary:refresh_isasl(Sock)
-            after
-                gen_tcp:close(Sock)
-            end;
-        Error ->
-            Error
-    end.
-
-connect_and_send_ssl_certs_refresh() ->
-    case connect(1) of
-        {ok, Sock} ->
-            try
-                ok = mc_client_binary:refresh_ssl_certs(Sock)
-            after
-                gen_tcp:close(Sock)
-            end;
-        Error ->
-            Error
-    end.
-
-connect_and_send_rbac_refresh() ->
-    case connect(1) of
-        {ok, Sock}  ->
-            try
-                ok = mc_client_binary:refresh_rbac(Sock)
-            after
-                gen_tcp:close(Sock)
-            end;
-        Error ->
-            Error
-    end.
-
 %%
 %% Internal functions
 %%
@@ -1191,8 +1160,6 @@ connect_and_send_rbac_refresh() ->
 connect() ->
     connect(?CONNECTION_ATTEMPTS).
 
-connect(0) ->
-    {error, couldnt_connect_to_memcached};
 connect(Tries) ->
     Config = ns_config:get(),
     Port = ns_config:search_node_prop(Config, memcached, dedicated_port),
@@ -1212,9 +1179,15 @@ connect(Tries) ->
         Sock -> {ok, Sock}
     catch
         E:R ->
-            ?log_warning("Unable to connect: ~p, retrying.", [{E, R}]),
-            timer:sleep(1000), % Avoid reconnecting too fast.
-            connect(Tries - 1)
+            case Tries of
+                1 ->
+                    ?log_warning("Unable to connect: ~p.", [{E, R}]),
+                    {error, couldnt_connect_to_memcached};
+                _ ->
+                    ?log_warning("Unable to connect: ~p, retrying.", [{E, R}]),
+                    timer:sleep(1000), % Avoid reconnecting too fast.
+                    connect(Tries - 1)
+            end
     end.
 
 
@@ -1245,6 +1218,140 @@ ensure_bucket(Sock, Bucket) ->
             {E, R}
     end.
 
+-record(qstats, {max_size = missng_max_size,
+                 dbname = missing_path,
+                 max_num_workers = missing_num_threads,
+                 item_eviction_policy = missing_eviction_policy,
+                 ephemeral_full_policy = missing_ephemeral_full_policy,
+                 ahead_threshold = missing_ahead_threshold,
+                 behind_threshold = missing_behind_threshold,
+                 ephemeral_metadata_purge_age = missing_ephemeral_metadata_purge_age}).
+
+-spec ensure_bucket_config(port(), bucket_name(), bucket_type(),
+                           {pos_integer(), nonempty_string()}) ->
+                                  ok | no_return().
+ensure_bucket_config(Sock, Bucket, membase,
+                     {MaxSize, DBDir, NumThreads, ItemEvictionPolicy, EphemeralFullPolicy,
+                      DriftThresholds, EphemeralPurgeAge}) ->
+    {ok, #qstats{max_size = ActualMaxSize,
+                 dbname = ActualDBDir,
+                 max_num_workers = ActualNumThreads,
+                 item_eviction_policy = ActualItemEvictionPolicy,
+                 ephemeral_full_policy = ActualEphemeralFullPolicy,
+                 ahead_threshold = ActualDAT,
+                 behind_threshold = ActualDBT,
+                 ephemeral_metadata_purge_age = ActualPurgeAge}} =
+        mc_binary:quick_stats(
+          Sock, <<>>,
+          fun (<<"ep_max_size">>, V, QStats) ->
+                  QStats#qstats{max_size = V};
+              (<<"ep_dbname">>, V, QStats) ->
+                  QStats#qstats{dbname = V};
+              (<<"ep_max_num_workers">>, V, QStats) ->
+                  QStats#qstats{max_num_workers = V};
+              (<<"ep_item_eviction_policy">>, V, QStats) ->
+                  QStats#qstats{item_eviction_policy = V};
+              (<<"ep_ephemeral_full_policy">>, V, QStats) ->
+                  QStats#qstats{ephemeral_full_policy = V};
+              (<<"ep_hlc_drift_ahead_threshold_us">>, V, QStats) ->
+                  QStats#qstats{ahead_threshold = V};
+              (<<"ep_hlc_drift_behind_threshold_us">>, V, QStats) ->
+                  QStats#qstats{behind_threshold = V};
+              (<<"ep_ephemeral_metadata_purge_age">>, V, QStats) ->
+                  QStats#qstats{ephemeral_metadata_purge_age = V};
+              (_, _, QStats) ->
+                  QStats
+          end, #qstats{}),
+
+    ReloadBuckets = ns_config:read_key_fast(dont_reload_bucket_on_cfg_change, false) =:= false,
+
+    Out = [maybe_set_num_threads(Bucket, ReloadBuckets, NumThreads, ActualNumThreads),
+           maybe_set_item_eviction_policy(Bucket, ReloadBuckets, ItemEvictionPolicy,
+                                          ActualItemEvictionPolicy),
+           maybe_set_ephemeral_full_policy(Sock, Bucket, EphemeralFullPolicy,
+                                           ActualEphemeralFullPolicy),
+           maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, EphemeralPurgeAge, ActualPurgeAge),
+           maybe_set_drift_thresholds(Sock, Bucket, DriftThresholds, ActualDAT, ActualDBT),
+           maybe_set_max_size(Sock, Bucket, MaxSize, ActualMaxSize),
+           maybe_set_db_dir(Bucket, DBDir, ActualDBDir)],
+
+    case lists:any(fun(RV) -> RV =:= {ok, needs_restart} end, Out) of
+        true ->
+            ale:info(?USER_LOGGER, "Restarting bucket ~p due to configuration change", [Bucket]),
+            exit({shutdown, reconfig});
+        false ->
+            ok
+    end;
+ensure_bucket_config(Sock, _Bucket, memcached, _MaxSize) ->
+    %% TODO: change max size of memcached bucket also
+    %% Make sure it's a memcached bucket
+    {ok, present} = mc_binary:quick_stats(
+                      Sock, <<>>,
+                      fun (<<"evictions">>, _, _) ->
+                              present;
+                          (_, _, CD) ->
+                              CD
+                      end, not_present),
+    ok.
+
+maybe_set_num_threads(Bucket, ReloadBuckets, NewNumThreads, ActualNumThreadsBin) ->
+    NewNumThreadsBin = list_to_binary(integer_to_list(NewNumThreads)),
+    case ReloadBuckets andalso NewNumThreadsBin =/= ActualNumThreadsBin of
+        true ->
+            ale:info(?USER_LOGGER,
+                     "Bucket priority changed from ~s to ~s for bucket ~p",
+                     [ActualNumThreadsBin, NewNumThreadsBin, Bucket]),
+            {ok, needs_restart};
+        false ->
+            ok
+    end.
+
+maybe_set_item_eviction_policy(_, _, undefined, _) ->
+    ok;
+maybe_set_item_eviction_policy(Bucket, ReloadBuckets, NewPolicy, ActualPolicyBin) ->
+    NewPolicyBin = atom_to_binary(NewPolicy, latin1),
+    case ReloadBuckets andalso NewPolicyBin =/= ActualPolicyBin of
+        true ->
+            ale:info(?USER_LOGGER,
+                     "Eviction policy changed from '~s' to '~s' for bucket ~p",
+                     [ActualPolicyBin, NewPolicyBin, Bucket]),
+            {ok, needs_restart};
+        false ->
+            ok
+    end.
+
+maybe_set_ephemeral_full_policy(_, _, undefined, _) ->
+    ok;
+maybe_set_ephemeral_full_policy(Sock, Bucket, NewPolicy, ActualPolicyBin) ->
+    NewPolicyBin = atom_to_binary(NewPolicy, latin1),
+    case NewPolicyBin =/= ActualPolicyBin of
+        true ->
+            ok = mc_client_binary:set_engine_param(Sock,
+                                                   <<"ephemeral_full_policy">>,
+                                                   NewPolicyBin,
+                                                   flush),
+            ?log_info("Ephemeral full policy changed from '~s' to '~s' for bucket ~p",
+                      [ActualPolicyBin, NewPolicyBin, Bucket]),
+            ok;
+        false ->
+            ok
+    end.
+
+maybe_set_ephemeral_metadata_purge_age(_, _, undefined, _) ->
+    ok;
+maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, NewPurgeAge, CurrPurgeAge) ->
+    NewPurgeAgeBin = list_to_binary(integer_to_list(NewPurgeAge)),
+    case NewPurgeAgeBin =/= CurrPurgeAge of
+        true ->
+            ok = mc_client_binary:set_flush_param(Sock,
+                                                  <<"ephemeral_metadata_purge_age">>,
+                                                  NewPurgeAgeBin),
+            ?log_info("Ephemeral metadata purge age changed from '~s' to '~s' for bucket ~p",
+                      [CurrPurgeAge, NewPurgeAgeBin, Bucket]),
+            ok;
+        false ->
+            ok
+    end.
 
 maybe_set_drift_thresholds(_Sock, _Bucket, undefined, _, _) ->
     ok;
@@ -1278,162 +1385,27 @@ maybe_set_drift_thresholds(Sock, Bucket, {DAT, DBT}, ActualDAT, ActualDBT) ->
             ok
     end.
 
--record(qstats, {max_size = missng_max_size,
-                 dbname = missing_path,
-                 max_num_workers = missing_num_threads,
-                 item_eviction_policy = missing_eviction_policy,
-                 ephemeral_full_policy = missing_ephemeral_full_policy,
-                 ahead_threshold = missing_ahead_threshold,
-                 behind_threshold = missing_behind_threshold,
-                 ephemeral_metadata_purge_age = missing_ephemeral_metadata_purge_age}).
-
--spec ensure_bucket_config(port(), bucket_name(), bucket_type(),
-                           {pos_integer(), nonempty_string()}) ->
-                                  ok | no_return().
-ensure_bucket_config(Sock, Bucket, membase,
-                     {MaxSize, DBDir, NumThreads, ItemEvictionPolicy, EphemeralFullPolicy,
-                      DriftThresholds, EphemeralPurgeAge}) ->
-    MaxSizeBin = list_to_binary(integer_to_list(MaxSize)),
-    DBDirBin = list_to_binary(DBDir),
-    NumThreadsBin = list_to_binary(integer_to_list(NumThreads)),
-    ItemEvictionPolicyBin = atom_to_binary(ItemEvictionPolicy, latin1),
-    EphemeralFullPolicyBin = atom_to_binary(EphemeralFullPolicy, latin1),
-    {ok, #qstats{max_size = ActualMaxSizeBin,
-                 dbname = ActualDBDirBin,
-                 max_num_workers = ActualNumThreads,
-                 item_eviction_policy = ActualItemEvictionPolicy,
-                 ephemeral_full_policy = ActualEphemeralFullPolicy,
-                 ahead_threshold = ActualDAT,
-                 behind_threshold = ActualDBT,
-                 ephemeral_metadata_purge_age = ActualPurgeAge}} =
-        mc_binary:quick_stats(
-          Sock, <<>>,
-          fun (<<"ep_max_size">>, V, QStats) ->
-                  QStats#qstats{max_size = V};
-              (<<"ep_dbname">>, V, QStats) ->
-                  QStats#qstats{dbname = V};
-              (<<"ep_max_num_workers">>, V, QStats) ->
-                  QStats#qstats{max_num_workers = V};
-              (<<"ep_item_eviction_policy">>, V, QStats) ->
-                  QStats#qstats{item_eviction_policy = V};
-              (<<"ep_ephemeral_full_policy">>, V, QStats) ->
-                  QStats#qstats{ephemeral_full_policy = V};
-              (<<"ep_hlc_drift_ahead_threshold_us">>, V, QStats) ->
-                  QStats#qstats{ahead_threshold = V};
-              (<<"ep_hlc_drift_behind_threshold_us">>, V, QStats) ->
-                  QStats#qstats{behind_threshold = V};
-              (<<"ep_ephemeral_metadata_purge_age">>, V, QStats) ->
-                  QStats#qstats{ephemeral_metadata_purge_age = V};
-              (_, _, QStats) ->
-                  QStats
-          end, #qstats{}),
-
-    CanReloadBuckets = ns_config:read_key_fast(dont_reload_bucket_on_cfg_change, false) =:= false,
-
-    NumThreadsChanged = CanReloadBuckets andalso (NumThreadsBin =/= ActualNumThreads),
-
-    ItemEvictionPolicyChanged = CanReloadBuckets
-        andalso ItemEvictionPolicy =/= undefined
-        andalso (ItemEvictionPolicyBin =/= ActualItemEvictionPolicy),
-
-    case NumThreadsChanged of
-        true ->
-            ale:info(?USER_LOGGER,
-                     "Bucket priority changed from ~s to ~s for bucket ~p",
-                     [ActualNumThreads, NumThreadsBin, Bucket]);
-        false ->
-            ok
-    end,
-
-    case ItemEvictionPolicyChanged of
-        true ->
-            ale:info(?USER_LOGGER,
-                     "Eviction policy changed form '~s' to '~s' for bucket ~p",
-                     [ActualItemEvictionPolicy, ItemEvictionPolicyBin, Bucket]);
-        false ->
-            ok
-    end,
-
-    case EphemeralFullPolicy =/= undefined of
-        true ->
-            maybe_update_ephemeral_full_policy(Sock, Bucket, EphemeralFullPolicyBin,
-                                               ActualEphemeralFullPolicy);
-        false ->
-            ok
-    end,
-
-    case EphemeralPurgeAge =/= undefined of
-        true ->
-            EphemeralPurgeAgeBin = list_to_binary(integer_to_list(EphemeralPurgeAge)),
-            maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, EphemeralPurgeAgeBin,
-                                                   ActualPurgeAge);
-        false ->
-            ok
-    end,
-
-    maybe_set_drift_thresholds(Sock, Bucket, DriftThresholds, ActualDAT, ActualDBT),
-
-    case NumThreadsChanged orelse ItemEvictionPolicyChanged of
-        true ->
-            ale:info(?USER_LOGGER,
-                     "Restarting bucket ~p due to configuration change",
-                     [Bucket]),
-            exit({shutdown, reconfig});
-        false ->
-            case ActualMaxSizeBin of
-                MaxSizeBin ->
-                    ok;
-                X1 when is_binary(X1) ->
-                    ?log_info("Changing max_size of ~p from ~s to ~s", [Bucket, X1,
-                                                                        MaxSizeBin]),
-                    ok = mc_client_binary:set_flush_param(Sock, <<"max_size">>, MaxSizeBin)
-            end,
-            case ActualDBDirBin of
-                DBDirBin ->
-                    ok;
-                X2 when is_binary(X2) ->
-                    ?log_info("Changing dbname of ~p from ~s to ~s", [Bucket, X2,
-                                                                      DBDirBin]),
-                    %% Just exit; this will delete and recreate the bucket
-                    exit({shutdown, reconfig})
-            end
-    end;
-ensure_bucket_config(Sock, _Bucket, memcached, _MaxSize) ->
-    %% TODO: change max size of memcached bucket also
-    %% Make sure it's a memcached bucket
-    {ok, present} = mc_binary:quick_stats(
-                      Sock, <<>>,
-                      fun (<<"evictions">>, _, _) ->
-                              present;
-                          (_, _, CD) ->
-                              CD
-                      end, not_present),
-    ok.
-
-maybe_update_ephemeral_full_policy(Sock, Bucket, NewFullPolicy, CurrFullPolicy) ->
-    case NewFullPolicy =/= CurrFullPolicy of
-        true ->
-            ok = mc_client_binary:set_flush_param(Sock,
-                                                   <<"ephemeral_full_policy">>,
-                                                   NewFullPolicy),
-            ?log_info("Ephemeral full policy changed from '~s' to '~s' for bucket ~p",
-                      [CurrFullPolicy, NewFullPolicy, Bucket]),
+maybe_set_max_size(Sock, Bucket, NewMaxSize, ActualMaxSizeBin) ->
+    NewMaxSizeBin = list_to_binary(integer_to_list(NewMaxSize)),
+    case ActualMaxSizeBin of
+        NewMaxSizeBin ->
             ok;
-        false ->
-            ok
+        X1 when is_binary(X1) ->
+            ?log_info("Changing max_size of ~p from ~s to ~s", [Bucket, X1,
+                                                                NewMaxSizeBin]),
+            ok = mc_client_binary:set_flush_param(Sock, <<"max_size">>, NewMaxSizeBin)
     end.
 
-maybe_set_ephemeral_metadata_purge_age(Sock, Bucket, NewPurgeAge, CurrPurgeAge) ->
-    case NewPurgeAge =/= CurrPurgeAge of
-        true ->
-            ok = mc_client_binary:set_flush_param(Sock,
-                                                   <<"ephemeral_metadata_purge_age">>,
-                                                   NewPurgeAge),
-            ?log_info("Ephemeral metadata purge age changed from '~s' to '~s' for bucket ~p",
-                      [CurrPurgeAge, NewPurgeAge, Bucket]),
+maybe_set_db_dir(Bucket, NewDBDir, ActualDBDirBin) ->
+    NewDBDirBin = list_to_binary(NewDBDir),
+    case ActualDBDirBin of
+        NewDBDirBin ->
             ok;
-        false ->
-            ok
+        X2 when is_binary(X2) ->
+            ?log_info("Changing dbname of ~p from ~s to ~s", [Bucket, X2,
+                                                              NewDBDirBin]),
+            %% Just exit; this will delete and recreate the bucket
+            {ok, needs_restart}
     end.
 
 server(Bucket) ->

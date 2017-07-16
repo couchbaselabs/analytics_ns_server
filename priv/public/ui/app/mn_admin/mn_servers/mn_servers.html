@@ -7,6 +7,12 @@
   </div>
   <div
      class="alert alert-warning"
+     ng-show="!('every' | lodash:('values' | lodash:poolDefault.compat)) && !adminCtl.clientAlerts.hideCompatibility">
+    <p>This cluster contains multiple server versions and is running in {{::poolDefault.thisNode.clusterCompatibility | decodeCompatVersion}} compatibility mode.</p>
+    <a ng-click="adminCtl.clientAlerts.hideCompatibility = true" class="close">X</a>
+  </div>
+  <div
+     class="alert alert-warning"
      ng-show="adminCtl.tasks.isLoadingSamples && rbac.cluster.tasks.read">
     <p>Warning: Rebalance is not available until data loading is completed.</p>
   </div>
@@ -14,9 +20,9 @@
      class="alert alert-warning"
      ng-show="serversCtl.autoFailoverSettings.data.count > 0 && rbac.cluster.settings.read">
     <p>A server was automatically failed over.</p>
-    <button
+    <a
        ng-show="rbac.cluster.settings.write"
-       ng-click="adminCtl.resetAutoFailOverCount()">Reset Quota</button>
+       ng-click="adminCtl.resetAutoFailOverCount()">Reset Quota</a>
   </div>
 </mn-element-cargo>
 <mn-element-cargo depot="actions">

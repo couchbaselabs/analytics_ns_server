@@ -558,17 +558,20 @@ parse_until(Str, Delimeters) ->
                             not lists:member(Char, Delimeters)
                     end, Str).
 
+role_to_atom(Role) ->
+    list_to_existing_atom(string:to_lower(Role)).
+
 parse_role(RoleRaw) ->
     try
         case parse_until(RoleRaw, "[") of
             {Role, []} ->
-                list_to_existing_atom(Role);
+                role_to_atom(Role);
             {Role, "[*]"} ->
-                {list_to_existing_atom(Role), [any]};
+                {role_to_atom(Role), [any]};
             {Role, [$[ | ParamAndBracket]} ->
                 case parse_until(ParamAndBracket, "]") of
                     {Param, "]"} ->
-                        {list_to_existing_atom(Role), [Param]};
+                        {role_to_atom(Role), [Param]};
                     _ ->
                         {error, RoleRaw}
                 end
@@ -852,7 +855,9 @@ handle_change_password_with_identity(Req, Identity) ->
                       ns_audit:password_change(Req, Identity),
                       menelaus_util:reply(Req, 200);
                   user_not_found ->
-                      menelaus_util:reply_json(Req, <<"User was not found.">>, 404)
+                      menelaus_util:reply_json(Req, <<"User was not found.">>, 404);
+                  unchanged ->
+                      menelaus_util:reply(Req, 200)
               end
       end, Req, validate_change_password(Req:parse_post())).
 

@@ -5,7 +5,7 @@
     .module("mnUserRolesService", ['mnHelper'])
     .factory("mnUserRolesService", mnUserRolesFactory);
 
-  function mnUserRolesFactory($q, $http, mnHelper) {
+  function mnUserRolesFactory($q, $http, mnHelper, mnPoolDefault) {
     var mnUserRolesService = {
       getState: getState,
       addUser: addUser,
@@ -27,13 +27,39 @@
       });
     }
 
+    function sort(array) {
+      if (angular.isArray(array) && angular.isArray(array[0])) {
+        array.forEach(sort);
+        array.sort(function(a, b) {
+          var aHasTitle = angular.isArray(a[1]) || !!a[0].bucket_name;
+          var bHasTitle = angular.isArray(b[1]) || !!b[0].bucket_name;
+          if (!aHasTitle && bHasTitle) {
+            return -1;
+          }
+          if (aHasTitle && !bHasTitle) {
+            return 1;
+          }
+          return 0;
+        });
+      }
+    }
+
     function getRolesTree(roles) {
+      roles = _.sortBy(roles, "name");
       var roles1 = _.groupBy(roles, 'role');
       var roles2 = _.groupBy(roles1, function (array, role) {
         return role.split("_")[0];
       });
+      var roles3 = _.values(roles2);
+      sort(roles3);
+      return roles3;
+    }
 
-      return roles2;
+    function getUser(user) {
+      return $http({
+        method: "GET",
+        url: getUserUrl(user)
+      });
     }
 
     function getUsers(params) {
@@ -41,13 +67,14 @@
         method: "GET",
         url: "/settings/rbac/users"
       };
-      if (params) {
+      if (params && params.pageSize) {
         config.params = {
           pageSize: params.pageSize,
           startFromDomain: params.startFromDomain,
           startFrom: params.startFrom
         };
       }
+
       return $http(config);
     }
 
@@ -59,7 +86,12 @@
     }
 
     function getUserUrl(user) {
-      return "/settings/rbac/users/" + encodeURIComponent(user.domain) + "/"  + encodeURIComponent(user.id);
+      var base = "/settings/rbac/users/";
+      if (mnPoolDefault.export.compat.atLeast50) {
+        return base + encodeURIComponent(user.domain) + "/"  + encodeURIComponent(user.id);
+      } else {
+        return base + encodeURIComponent(user.id);
+      }
     }
 
     function prepareUserRoles(userRoles) {
@@ -90,15 +122,18 @@
       });
     }
 
-    function doAddUser(user, roles) {
+    function packData(user, roles) {
       var data = {
         roles: roles.join(','),
         name: user.name
       };
-      if (user.domain === "local") {
+      if (user.password) {
         data.password = user.password;
       }
+      return data;
+    }
 
+    function doAddUser(data, user) {
       return $http({
         method: "PUT",
         data: data,
@@ -138,14 +173,12 @@
         return $q.reject({roles: "at least one role should be added"});
       }
       if (isEditingMode) {
-        return doAddUser(user, roles);
+        return doAddUser(packData(user, roles), user);
       } else {
-        return getUsers().then(function (users) {
-          if (_.find(users, {id: user.id, domain: user.domain})) {
-            return $q.reject({username: "username already exists"});
-          } else {
-            return doAddUser(user, roles);
-          }
+        return getUser(user).then(function (users) {
+          return $q.reject({username: "username already exists"});
+        }, function () {
+          return doAddUser(packData(user, roles), user);
         });
       }
 
@@ -163,7 +196,14 @@
               return prev;
             }, {});
         }
-        return resp.data;
+        if (!resp.data.users) {//in oreder to support compatibility mode
+          return {
+            users: resp.data
+          };
+        } else {
+          return resp.data;
+        }
+
       });
     }
   }

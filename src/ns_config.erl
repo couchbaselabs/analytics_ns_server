@@ -949,7 +949,7 @@ handle_call({clear, Keep}, From, State) ->
     %% we ignore state from saver, 'cause we're going to reload it anyway
     wait_saver(NewState, infinity),
     RV = handle_call(reload, From, State),
-    ?log_debug("Full result of clear:~n~p", [RV]),
+    ?log_debug("Full result of clear:~n~p", [ns_config_log:sanitize(RV)]),
     RV;
 
 handle_call({merge_ns_couchdb_config, NewKVList0, FromNode}, _From, State) ->
@@ -1381,35 +1381,9 @@ latest() ->
 
 -ifdef(EUNIT).
 
-do_setup() ->
-    mock_gen_server:start_link({local, ?MODULE}),
-    ok.
-
-shutdown_process(Name) ->
-    OldWaitFlag = erlang:process_flag(trap_exit, true),
-    try
-        Pid = whereis(Name),
-        exit(Pid, shutdown),
-        receive
-            {'EXIT', Pid, _} -> ok
-        end
-    catch Kind:What ->
-            io:format("Ignoring ~p:~p while shutting down ~p~n", [Kind, What, Name])
-    end,
-    erlang:process_flag(trap_exit, OldWaitFlag).
-
-do_teardown(_V) ->
-    shutdown_process(?MODULE),
-    ok.
-
 all_test_() ->
-    [{spawn, {foreach, fun do_setup/0, fun do_teardown/1,
-              [fun test_setup/0,
-               {"test_set", fun test_set/0},
-               {"test_cas_config", fun test_cas_config/0},
-               {"test_update_config", fun test_update_config/0},
-               {"test_set_kvlist", fun test_set_kvlist/0},
-               {"test_update", fun test_update/0}]}},
+    [{spawn, [{"test_update_config", fun test_update_config/0},
+              {"test_set_kvlist", fun test_set_kvlist/0}]},
      {spawn, {foreach, fun setup_with_saver/0, fun teardown_with_saver/1,
               [{"test_with_saver_stop", fun test_with_saver_stop/0},
                {"test_clear", fun test_clear/0},
@@ -1417,94 +1391,8 @@ all_test_() ->
                {"test_clear_with_concurrent_save", fun test_clear_with_concurrent_save/0},
                {"test_local_changes_count", fun test_local_changes_count/0}]}}].
 
-test_setup() ->
-    F = fun () -> ok end,
-    mock_gen_server:stub_call(?MODULE,
-                              update_with_changes,
-                              fun ({update_with_changes, X}) ->
-                                      X
-                              end),
-    ?assertEqual(F, gen_server:call(ns_config, {update_with_changes, F})).
-
 -define(assertConfigEquals(A, B), ?assertEqual(lists:sort([{K, strip_metadata(V)} || {K,V} <- A]),
                                                lists:sort([{K, strip_metadata(V)} || {K,V} <- B]))).
-
-test_set() ->
-    Self = self(),
-    mock_gen_server:stub_call(?MODULE,
-                              update_with_changes,
-                              fun (Msg) ->
-                                      Self ! Msg, ok
-                              end),
-    ns_config:set(test, 1),
-    Updater0 = (fun () -> receive {update_with_changes, F} -> F end end)(),
-
-    ?assertConfigEquals([{test, 1}], element(2, Updater0([], <<"uuid">>))),
-    {[{test, [{'_vclock', _} | 1]}], Val2} = Updater0([{foo, 2}], <<"uuid">>),
-    ?assertConfigEquals([{test, 1}, {foo, 2}], Val2),
-
-    %% and here we're changing value, so expecting vclock
-    {[{test, [{'_vclock', [_]} | 1]}], Val3} =
-        Updater0([{foo, [{k, 1}, {v, 2}]},
-                  {xar, true},
-                  {test, [{a, b}, {c, d}]}], <<"uuid">>),
-
-    ?assertConfigEquals([{foo, [{k, 1}, {v, 2}]},
-                         {xar, true},
-                         {test, 1}], Val3),
-
-    SetVal1 = [{suba, true}, {subb, false}],
-    ns_config:set(test, SetVal1),
-    Updater1 = (fun () -> receive {update_with_changes, F} -> F end end)(),
-
-    {[{test, SetVal1Actual1}], Val4} = Updater1([{test, [{suba, false}, {subb, true}]}], <<"uuid2">>),
-    ?assertMatch([{'_vclock', [{<<"uuid2">>, _}]} | SetVal1], SetVal1Actual1),
-    ?assertEqual(SetVal1, strip_metadata(SetVal1Actual1)),
-    ?assertMatch([{test, SetVal1Actual1}], Val4).
-
-test_cas_config() ->
-    Self = self(),
-    {ok, _FakeConfigEvents} = gen_event:start_link({local, ns_config_events}),
-    try
-        do_test_cas_config(Self)
-    after
-        (catch shutdown_process(ns_config_events)),
-        (catch erlang:unregister(ns_config_events))
-    end.
-
-do_test_cas_config(Self) ->
-    mock_gen_server:stub_call(?MODULE,
-                              cas_config,
-                              fun (Msg) ->
-                                      Self ! Msg, ok
-                              end),
-
-    ets:new(ns_config_announces_counter, [set, named_table]),
-    ets:insert_new(ns_config_announces_counter, {changes_counter, 0}),
-
-    (catch ets:new(ns_config_ets_dup, [public, set, named_table])),
-
-    ns_config:cas_remote_config(new, [], old),
-    receive
-        {cas_config, new, [], old, _} ->
-            ok
-    after 0 ->
-            exit(missing_cas_config_msg)
-    end,
-
-    Config = #config{dynamic=[[{a,1},{b,1}]],
-                     saver_mfa = {?MODULE, send_config, [Self]},
-                     saver_pid = Self,
-                     pending_more_save = true},
-    ?assertEqual([{a,1},{b,1}], config_dynamic(Config)),
-
-
-    {reply, true, NewConfig} = handle_call({cas_config, [{a,2}], [], config_dynamic(Config), remote}, [], Config),
-    ?assertEqual(NewConfig, Config#config{dynamic=[config_dynamic(NewConfig)]}),
-    ?assertEqual([{a,2}], config_dynamic(NewConfig)),
-
-    {reply, false, NewConfig} = handle_call({cas_config, [{a,3}], [], config_dynamic(Config), remote}, [], NewConfig).
-
 
 test_update_config() ->
     ?assertConfigEquals([{test, 1}], update_config_key(test, 1, [], <<"uuid">>)),
@@ -1529,70 +1417,6 @@ test_set_kvlist() ->
     ?assertConfigEquals(NewPairs, [{foo, FooVal}, {bar, false}]),
     ?assertMatch([{'_vclock', [{<<"uuid">>, _}]}, {suba, a}, {subb, b}],
                  FooVal).
-
-test_update() ->
-    Self = self(),
-    mock_gen_server:stub_call(?MODULE,
-                              update_with_changes,
-                              fun (Msg) ->
-                                      Self ! Msg, ok
-                              end),
-    RecvUpdater = fun () ->
-                          receive
-                              {update_with_changes, F} -> F
-                          end
-                  end,
-
-    OldConfig = [{dont_change, 1},
-                 {erase, 2},
-                 {list_value, [{'_vclock', [{'n@never-really-possible-hostname', {1, 12345}}]},
-                               {a, b}, {c, d}]},
-                 {a, 3},
-                 {b, 4},
-                 {delete, 5}],
-    ns_config:update(fun ({dont_change, _}) ->
-                             skip;
-                         ({erase, _}) ->
-                             erase;
-                         ({list_value, V}) ->
-                             {update, {list_value, [V | V]}};
-                         ({delete, _}) ->
-                             delete;
-                         ({K, V}) ->
-                             {update, {K, -V}}
-                     end),
-    Updater = RecvUpdater(),
-    {Changes, NewConfig} = Updater(OldConfig, <<"uuid">>),
-
-    ?assertConfigEquals(Changes ++ [{dont_change, 1}],
-                        NewConfig),
-    ?assertEqual(lists:keyfind(dont_change, 1, Changes), false),
-
-    ?assertEqual(lists:sort([dont_change, list_value, a, b, delete]), lists:sort(proplists:get_keys(NewConfig))),
-
-    {list_value, [{'_vclock', Clocks} | ListValues]} = lists:keyfind(list_value, 1, NewConfig),
-
-    ?assertEqual({'n@never-really-possible-hostname', {1, 12345}},
-                 lists:keyfind('n@never-really-possible-hostname', 1, Clocks)),
-    ?assertMatch([{<<"uuid">>, _}], lists:keydelete('n@never-really-possible-hostname', 1, Clocks)),
-
-    ?assertEqual([[{a, b}, {c, d}], {a, b}, {c, d}], ListValues),
-
-    ?assertEqual(-3, strip_metadata(proplists:get_value(a, NewConfig))),
-    ?assertEqual(-4, strip_metadata(proplists:get_value(b, NewConfig))),
-
-    ?assertMatch([{<<"uuid">>, _}], extract_vclock(proplists:get_value(a, NewConfig))),
-    ?assertMatch([{<<"uuid">>, _}], extract_vclock(proplists:get_value(b, NewConfig))),
-    ?assertMatch([{<<"uuid">>, _}], extract_vclock(proplists:get_value(delete, NewConfig))),
-
-    ?assertEqual(false, ns_config:search([NewConfig], delete)),
-
-    ns_config:update_key(a, fun (3) -> 10 end),
-    Updater2 = RecvUpdater(),
-    {[{a, [{'_vclock', [_]} | 10]}], NewConfig2} = Updater2(OldConfig, <<"uuid">>),
-
-    ?assertConfigEquals([{a, 10} | lists:keydelete(a, 1, OldConfig)], NewConfig2),
-    ok.
 
 send_config(Config, Pid) ->
     Ref = erlang:make_ref(),
@@ -1970,14 +1794,13 @@ merge_values_test__() ->
       end).
 
 mock_timestamp(Body) ->
-    {ok, Pid} = mock:mock(calendar),
     Tid = ets:new(none, [public]),
     true = ets:insert_new(Tid, {counter, 0}),
+    ok = meck:new(calendar, [unstick, passthrough]),
 
     try
-        ok = mock:expects(calendar, datetime_to_gregorian_seconds,
-                          fun (_) -> true end,
-                          fun (_, _) ->
+        ok = meck:expect(calendar, datetime_to_gregorian_seconds,
+                          fun (_) ->
                                   [{counter, Count}] = ets:lookup(Tid, counter),
                                   NewCount = case random:uniform() < 0.3 of
                                                  true ->
@@ -1985,34 +1808,13 @@ mock_timestamp(Body) ->
                                                  false ->
                                                      Count
                                              end,
-
                                   true = ets:insert(Tid, {counter, NewCount}),
-
                                   Count
-                          end, 16#ffffffff),
-        ok = mock:expects(calendar, local_time,
-                          fun (_) -> true end,
-                          fun (_, _) -> erlang:localtime() end, 16#ffffffff),
-        ok = mock:expects(calendar, now_to_local_time,
-                          fun (_) -> true end,
-                          fun (_, _) -> erlang:localtime() end, 16#ffffffff),
-        ok = mock:expects(calendar, now_to_universal_time,
-                          fun (_) -> true end,
-                          fun (_, _) -> erlang:universaltime() end, 16#ffffffff),
-        ok = mock:expects(calendar, seconds_to_time,
-                          fun (_) -> true end,
-                          fun (_, _) -> {0, 0, 0} end, 16#ffffffff),
-
+                          end),
         Body()
     after
-        ets:delete(Tid),
-
-        unlink(Pid),
-        exit(Pid, kill),
-        misc:wait_for_process(Pid, infinity),
-
-        code:purge(calendar),
-        true = code:delete(calendar)
+        meck:unload(calendar),
+        ets:delete(Tid)
     end.
 
 mutate(Value, Nodes) ->

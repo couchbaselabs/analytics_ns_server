@@ -413,7 +413,7 @@ get_samples_for_system_or_bucket_stat(BucketName, StatName, ClientTStamp, Window
 %% List of different types of stats
 kinds_list(BucketName) ->
     ["@system", BucketName, "@query", "@index-" ++ BucketName,
-     "@fts-" ++ BucketName, "@xdcr-" ++ BucketName, "@index"].
+     "@fts-" ++ BucketName, "@xdcr-" ++ BucketName, "@index", "@fts"].
 
 %% For many stats, their kind can be identified by their prefix.
 get_possible_kind(StatName, BucketName) ->
@@ -1592,7 +1592,8 @@ do_couchbase_fts_stats_descriptions(BucketId, FtsNodes) ->
                  {struct, [{title, <<"partitions actual">>},
                            {name, per_fts_stat(Id, <<"num_pindexes_actual">>)},
                            {desc, <<"Number of index partitions"
-                                    " (measured from num_pindexes_actual)">>}]},
+                                    " (including replica partitions, measured from"
+                                    " num_pindexes_actual)">>}]},
                  {struct, [{title, <<"bytes returned/sec">>},
                            {name, per_fts_stat(Id, <<"total_bytes_query_results">>)},
                            {desc, <<"Number of bytes returned in results per second"
@@ -1600,7 +1601,8 @@ do_couchbase_fts_stats_descriptions(BucketId, FtsNodes) ->
                  {struct, [{title, <<"slow queries/sec">>},
                            {name, per_fts_stat(Id, <<"total_queries_slow">>)},
                            {desc, <<"Number of slow queries per second"
-                                    " (measured from total_queries_slow)">>}]},
+                                    " (measured from total_queries_slow - those"
+                                    " taking >5s to run)">>}]},
                  {struct, [{isBytes, true},
                            {title, <<"disk size">>},
                            {name, per_fts_stat(Id, <<"num_bytes_used_disk">>)},
@@ -1609,7 +1611,8 @@ do_couchbase_fts_stats_descriptions(BucketId, FtsNodes) ->
                  {struct, [{title, <<"partitions target">>},
                            {name, per_fts_stat(Id, <<"num_pindexes_target">>)},
                            {desc, <<"Number of index partitions expected"
-                                    " (measured from num_pindexes_target)">>}]},
+                                    " (including replica partitions, measured from"
+                                    " num_pindexes_target)">>}]},
                  {struct, [{title, <<"term searchers/sec">>},
                            {name, per_fts_stat(Id, <<"total_term_searchers">>)},
                            {desc, <<"Number of term searchers started per second"

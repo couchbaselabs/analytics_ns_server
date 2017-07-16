@@ -43,6 +43,10 @@ setup_body() ->
                                              []
                                      end
                              end),
+    ns_pubsub:subscribe_link(user_storage_events,
+                             fun (_) ->
+                                     Self ! check_children_update
+                             end),
     Children = dynamic_children(normal),
     set_children_and_loop(Children, undefined, normal).
 
@@ -217,9 +221,7 @@ do_per_bucket_moxi_specs(Config) ->
     RestPort = ns_config:search_node_prop(Config, rest, port),
     Command = path_config:component_path(bin, "moxi"),
     lists:foldl(
-      fun ({"default", _}, Acc) ->
-              Acc;
-          ({BucketName, BucketConfig}, Acc) ->
+      fun ({BucketName, BucketConfig}, Acc) ->
               case proplists:get_value(moxi_port, BucketConfig) of
                   undefined ->
                       Acc;
@@ -511,8 +513,18 @@ format(Config, Name, Format, Keys) ->
                        end, Keys),
     lists:flatten(io_lib:format(Format, Values)).
 
+default_is_passwordless(Config) ->
+    lists:member({"default", local}, menelaus_users:get_passwordless()) andalso
+        lists:keymember("default", 1, ns_bucket:get_buckets(Config)).
+
+should_run_moxi(Config) ->
+    ns_cluster_membership:should_run_service(Config, kv, node())
+        andalso
+          ((not cluster_compat_mode:is_cluster_spock(Config)) orelse
+           default_is_passwordless(Config)).
+
 moxi_spec(Config) ->
-    case ns_cluster_membership:should_run_service(Config, kv, node()) of
+    case should_run_moxi(Config) of
         true ->
             do_moxi_spec();
         false ->
@@ -528,7 +540,7 @@ do_moxi_spec() ->
              "downstream_conn_queue_timeout=200,"
              "downstream_timeout=5000,wait_queue_timeout=200",
              [port]},
-      "-z", {"url=http://127.0.0.1:~B/pools/default/saslBucketsStreaming",
+      "-z", {"url=http://127.0.0.1:~B/pools/default/saslBucketsStreaming?moxi=1",
              [{misc, this_node_rest_port, []}]},
       "-p", "0",
       "-Y", "y",

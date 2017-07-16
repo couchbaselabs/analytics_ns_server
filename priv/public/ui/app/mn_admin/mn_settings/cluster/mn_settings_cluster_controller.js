@@ -61,13 +61,13 @@
       var promise3 = $q.all(queries);
       mnPromiseHelper(vm, promise3)
         .showGlobalSpinner()
-        .showGlobalSuccess("Settings saved successfully!", 4000);
+        .showGlobalSuccess("Settings saved successfully!");
     }
     function saveVisualInternalSettings() {
       if (vm.clusterSettingsLoading) {
         return;
       }
-      if ((!vm.indexSettings || vm.indexSettings.storageMode !== "memory_optimized") && vm.initialMemoryQuota != vm.memoryQuotaConfig.indexMemoryQuota) {
+      if ((!vm.indexSettings || vm.indexSettings.storageMode === "forestdb") && vm.initialMemoryQuota != vm.memoryQuotaConfig.indexMemoryQuota) {
         $uibModal.open({
           templateUrl: 'app/mn_admin/mn_settings/cluster/mn_settings_cluster_confirmation_dialog.html'
         }).result.then(saveSettings);

@@ -16,7 +16,7 @@
      mn-spinner="userRolesAddDialogCtl.viewLoading">
     <div class="panel-content forms max-height-500">
       <div
-         mn-focus="!!userRolesAddDialogCtl.errors"
+         mn-focus="userRolesAddDialogCtl.focusError"
          tabindex="1"
          class="error error-form"
          ng-show="userRolesAddDialogCtl.errors"
@@ -24,7 +24,7 @@
         {{error}}
       </div>
       <div class="formrow checkbox-list">
-        <div ng-if="userRolesAddDialogCtl.isLdapEnabled">
+        <div ng-if="userRolesAddDialogCtl.isLdapEnabled && poolDefault.compat.atLeast50">
           <h4>Authentication Domain</h4>
           <input
              type="radio"
@@ -143,6 +143,14 @@
               <label
                  for="for-{{::getUIID}}">
                 {{::!role.bucket_name ? role.name : role.bucket_name == "*" ? "all [*]" : role.bucket_name}}
+                <span
+                   ng-if="getUIID === 'query_external_access'"
+                   tooltip-trigger="'mouseenter'"
+                   tooltip-append-to-body="true"
+                   class="fa-exclamation-circle icon"
+                   style="color: #F9CA78;"
+                   uib-tooltip="Warning: Granting the query_external_access role permits execution of the N1QL function CURL() and may allow access to other network endpoints in the local network and the Internet.">
+                </span>
               </label>
             </div>
           </div>
@@ -150,7 +158,7 @@
         <div>
           <div
              ng-init="level = 0;"
-             ng-repeat="(key, role) in userRolesAddDialogCtl.rolesTree"
+             ng-repeat="role in userRolesAddDialogCtl.rolesTree"
              ng-include="'rolesTree'"></div>
         </div>
       </fieldset>

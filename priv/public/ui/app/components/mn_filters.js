@@ -35,7 +35,16 @@
     .filter('mnIntegerToString', mnIntegerToString)
     .filter('mnFormatStorageMode', mnFormatStorageMode)
     .filter('mnLimitTo', mnLimitTo)
-    .filter('jQueryLikeParamSerializer', jQueryLikeParamSerializer);
+    .filter('jQueryLikeParamSerializer', jQueryLikeParamSerializer)
+    .filter('decodeCompatVersion', decodeCompatVersion)
+
+  function decodeCompatVersion() {
+    return function (version) {
+      var major = Math.floor(version / 0x10000);
+      var minor = version - (major * 0x10000);
+      return major.toString() + "." + minor.toString();
+    }
+  }
 
   //function is borrowed from the Angular source code because we want to
   //use $httpParamSerializerJQLik but with properly encoded params via
@@ -94,9 +103,10 @@
   function mnFormatStorageMode() {
     return function (value) {
       switch (value) {
-        case "forestdb": return "Standard Global Secondary Indexes";
-        case "memory_optimized": return "Memory-Optimized Global Secondary Indexes";
-        default: return value;
+      case "plasma": return "Standard Global Secondary Indexes";
+      case "forestdb": return "Legacy Global Secondary Indexes";
+      case "memory_optimized": return "Memory-Optimized Global Secondary Indexes";
+      default: return value;
       }
     };
   }

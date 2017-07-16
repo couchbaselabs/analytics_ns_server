@@ -17,6 +17,8 @@
 %%
 -module(ns_audit).
 
+-behaviour(gen_server).
+
 -include("ns_common.hrl").
 
 -export([login_success/1,
@@ -66,7 +68,122 @@
          security_settings/2
         ]).
 
--export([stats/0]).
+-export([start_link/0, stats/0]).
+
+%% gen_server callbacks
+-export([init/1, handle_cast/2, handle_call/3,
+         handle_info/2, terminate/2, code_change/3]).
+
+-record(state, {queue, retries}).
+
+backup_path() ->
+    filename:join(path_config:component_path(data, "config"), "audit.bak").
+
+start_link() ->
+    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+init([]) ->
+    erlang:process_flag(trap_exit, true),
+    {ok, #state{queue = maybe_restore_backup(), retries = 0}}.
+
+terminate(_Reason, #state{queue = Queue}) ->
+    maybe_backup(Queue).
+
+code_change(_OldVsn, State, _) -> {ok, State}.
+
+handle_call({log, Code, Body}, _From, #state{queue = Queue} = State) ->
+    CleanedQueue =
+        case queue:len(Queue) > ns_config:read_key_fast(max_audit_queue_length, 1000) of
+            true ->
+                ?log_error("Audit queue is too large. Dropping audit records to info log"),
+                print_audit_records(Queue),
+                queue:new();
+            false ->
+                Queue
+        end,
+    ?log_debug("Audit ~p: ~p", [Code, Body]),
+    EncodedBody = ejson:encode({Body}),
+    NewQueue = queue:in({Code, EncodedBody}, CleanedQueue),
+    self() ! send,
+    {reply, ok, State#state{queue = NewQueue}};
+handle_call(stats, _From, #state{queue = Queue, retries = Retries} = State) ->
+    {reply, [{queue_length, queue:len(Queue)},
+             {unsuccessful_retries, Retries}], State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info(send, #state{queue = Queue, retries = Retries} = State) ->
+    misc:flush(send),
+    {Res, NewQueue} = send_to_memcached(Queue),
+    NewRetries =
+        case Res of
+            ok ->
+                0;
+            error ->
+                timer2:send_after(1000, send),
+                Retries + 1
+        end,
+    {noreply, State#state{queue = NewQueue, retries = NewRetries}};
+handle_info({'EXIT', From, Reason}, State) ->
+    ?log_debug("Received exit from ~p with reason ~p. Exiting.", [From, Reason]),
+    {stop, Reason, State}.
+
+maybe_backup(Queue) ->
+    case queue:is_empty(Queue) of
+        false ->
+            ?log_warning("Backup non empty audit queue"),
+            case misc:write_file(backup_path(), term_to_binary(Queue)) of
+                ok ->
+                    ok;
+                Error ->
+                    ?log_error("Error backing up audit queue: ~p", [Error])
+            end;
+        true ->
+            ok
+    end.
+
+restore_backup(Binary) ->
+    try binary_to_term(Binary, [safe]) of
+        Queue ->
+            case queue:is_queue(Queue) of
+                true ->
+                    ?log_info("Audit queue was restored from the backup"),
+                    self() ! send,
+                    Queue;
+                false ->
+                    ?log_error("Backup content is not a proper queue"),
+                    error
+            end
+    catch
+        T:E ->
+            ?log_error("Backup is malformed ~p", [{T,E}]),
+            error
+    end.
+
+maybe_restore_backup() ->
+    case file:read_file(backup_path()) of
+        {ok, Binary} ->
+            Queue =
+                case restore_backup(Binary) of
+                    error ->
+                        queue:new();
+                    Q ->
+                        Q
+                end,
+            case file:delete(backup_path()) of
+                ok ->
+                    ok;
+                Error ->
+                    ?log_error("Unable to delete backup file: ~p", [Error])
+            end,
+            Queue;
+        {error, enoent} ->
+            queue:new();
+        Other ->
+            ?log_error("Unexpected error when reading backup: ~p", [Other]),
+            queue:new()
+    end.
 
 code(login_success) ->
     8192;
@@ -252,38 +369,37 @@ prepare(Req, Params) ->
 
 put(Code, Req, Params) ->
     Body = prepare(Req, Params),
-    proc_lib:spawn_link(
-      fun () ->
-              ?log_debug("Audit ~p: ~p", [Code, Body]),
-              EncodedBody = ejson:encode({Body}),
-              send_to_memcached(Code, EncodedBody, 1)
-      end).
+    ok = gen_server:call(?MODULE, {log, Code, Body}).
 
-send_to_memcached(Code, EncodedBody, Iteration) ->
-    case (catch ns_memcached_sockets_pool:executing_on_socket(
-                  fun (Sock) ->
-                          mc_client_binary:audit_put(Sock, code(Code), EncodedBody)
-                  end)) of
-        ok ->
-            ok;
-        Error ->
-            case Iteration of
-                21 ->
-                    ?log_error("Audit put call ~p with body ~p failed with error ~p",
-                               [Code, EncodedBody, Error]);
-                _ ->
-                    ?log_debug("Audit put call ~p with body ~p failed with error ~p. Retrying in 1s. Iteration ~p",
-                               [Code, EncodedBody, Error, Iteration]),
-                    timer:sleep(1000),
-                    send_to_memcached(Code, EncodedBody, Iteration + 1)
+send_to_memcached(Queue) ->
+    case queue:out(Queue) of
+        {empty, Queue} ->
+            {ok, Queue};
+        {{value, {Code, EncodedBody}}, NewQueue} ->
+            case (catch ns_memcached_sockets_pool:executing_on_socket(
+                          fun (Sock) ->
+                                  mc_client_binary:audit_put(Sock, code(Code), EncodedBody)
+                          end)) of
+                ok ->
+                    send_to_memcached(NewQueue);
+                Error ->
+                    ?log_debug(
+                       "Audit put call ~p with body ~p failed with error ~p. Retrying in 1s.",
+                       [Code, EncodedBody, Error]),
+                    {error, Queue}
             end
     end.
 
 stats() ->
-    ns_memcached_sockets_pool:executing_on_socket(
+    case ns_memcached_sockets_pool:executing_on_socket(
       fun (Sock) ->
               mc_binary:quick_stats(Sock, <<"audit">>, fun mc_binary:quick_stats_append/3, [])
-      end).
+      end) of
+        {ok, Stats} ->
+            {ok, Stats ++ gen_server:call(?MODULE, stats)};
+        Error ->
+            Error
+    end.
 
 login_success(Req) ->
     Identity = menelaus_auth:get_identity(Req),
@@ -549,3 +665,12 @@ client_cert_auth(Req, Value) ->
 
 security_settings(Req, Settings) ->
     put(security_settings, Req, [{settings, {prepare_list(Settings)}}]).
+
+print_audit_records(Queue) ->
+    case queue:out(Queue) of
+        {empty, _} ->
+            ok;
+        {{value, V}, NewQueue} ->
+            ?log_info("Dropped  audit entry: ~p", [V]),
+            print_audit_records(NewQueue)
+    end.

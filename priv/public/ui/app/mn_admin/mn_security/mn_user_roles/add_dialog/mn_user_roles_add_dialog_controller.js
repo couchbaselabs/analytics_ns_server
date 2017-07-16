@@ -5,9 +5,9 @@
     .module("mnUserRoles")
     .controller("mnUserRolesAddDialogController", mnUserRolesAddDialogController);
 
-  function mnUserRolesAddDialogController($scope, mnUserRolesService, $uibModalInstance, mnPromiseHelper, user, isLdapEnabled) {
+  function mnUserRolesAddDialogController($scope, mnUserRolesService, $uibModalInstance, mnPromiseHelper, user, isLdapEnabled, mnPoolDefault) {
     var vm = this;
-    vm.user = _.clone(user) || {domain: "local"};
+    vm.user = _.clone(user) || {domain: mnPoolDefault.export.compat.atLeast50 ? "local" : "external"};
     vm.userID = vm.user.id || 'New';
     vm.roles = [];
     vm.save = save;
@@ -19,6 +19,7 @@
     vm.selectedRoles = {};
     vm.getUIID = getUIID;
     vm.toggleWrappers = toggleWrappers;
+    vm.focusError = false;
 
     activate();
 
@@ -83,14 +84,21 @@
 
     function save() {
       if (vm.form.$invalid) {
+        vm.focusError = true;
         return;
       }
-      mnPromiseHelper(vm, mnUserRolesService.addUser(vm.user, _.clone(vm.selectedRoles), user), $uibModalInstance, vm.isEditingMode)
+      if (!vm.isEditingMode && vm.user.domain !== "local") {
+        delete vm.user.password;
+      }
+      mnPromiseHelper(vm, mnUserRolesService.addUser(vm.user, _.clone(vm.selectedRoles), vm.isEditingMode), $uibModalInstance)
         .showGlobalSpinner()
-        .catchErrors()
+        .catchErrors(function (errors) {
+          vm.focusError = !!errors;
+          vm.errors = errors;
+        })
         .broadcast("reloadRolesPoller")
         .closeOnSuccess()
-        .showGlobalSuccess("User saved successfully!", 4000);
+        .showGlobalSuccess("User saved successfully!");
     }
   }
 })();

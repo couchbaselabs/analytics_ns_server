@@ -146,7 +146,7 @@ on_save({auth, Identity}, Value, Deleted, State = #state{base = Base}) ->
 
 on_empty(_State) ->
     true = ets:delete_all_objects(versions_name()),
-    init_versions().
+    #state{base = init_versions()}.
 
 maybe_update_passwordless(_Identity, _Value, _Deleted, State = #state{passwordless = undefined}) ->
     State;
@@ -300,12 +300,12 @@ store_user_spock_with_auth(Identity, Props, Auth, Roles, Config) ->
 
 store_user_spock_validated(Identity, Props, Auth) ->
     ok = replicated_dets:set(storage_name(), {user, Identity}, Props),
-    case Auth of
-        same ->
-            ok;
-        _ ->
-            ok = replicated_dets:set(storage_name(), {auth, Identity}, Auth)
-    end.
+    store_auth(Identity, Auth).
+
+store_auth(_Identity, same) ->
+    unchanged;
+store_auth(Identity, Auth) when is_list(Auth) ->
+    ok = replicated_dets:set(storage_name(), {auth, Identity}, Auth).
 
 change_password({_UserName, local} = Identity, Password) when is_list(Password) ->
     case replicated_dets:get(storage_name(), {user, Identity}) of
@@ -314,7 +314,7 @@ change_password({_UserName, local} = Identity, Password) when is_list(Password) 
         _ ->
             CurrentAuth = replicated_dets:get(storage_name(), {auth, Identity}),
             Auth = build_auth(CurrentAuth, Password),
-            replicated_dets:set(storage_name(), {auth, Identity}, Auth)
+            store_auth(Identity, Auth)
     end.
 
 -spec delete_user(rbac_identity()) -> run_txn_return().
@@ -326,7 +326,8 @@ delete_user(Identity) ->
             delete_user_45(Identity)
     end.
 
-delete_user_45(Identity) ->
+delete_user_45({UserName, external}) ->
+    Identity = {UserName, saslauthd},
     ns_config:run_txn(
       fun (Config, SetFn) ->
               case ns_config:search(Config, user_roles) of
