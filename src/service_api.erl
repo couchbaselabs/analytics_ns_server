@@ -130,4 +130,6 @@ map_error(?ERROR_NOT_SUPPORTED) ->
     operation_not_supported;
 map_error(?ERROR_RECOVERY_IMPOSSIBLE) ->
     recovery_impossible;
+map_error(?ERROR_CBAS_MASTER_EJECT_NOT_SUPPORTED) ->
+    cbas_master_eject_not_supported;
 map_error(Error) -> {unknown_error, Error}.

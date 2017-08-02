@@ -21,6 +21,7 @@
 -behaviour(gen_fsm).
 
 -include("ns_common.hrl").
+-include("service_api.hrl").
 
 %% Constants and definitions
 
@@ -1306,10 +1307,14 @@ reason2status(normal, _Type) ->
 reason2status(stopped, _Type) ->
     none;
 reason2status(_Error, Type) ->
-    Msg = io_lib:format(
-            "~s failed. See logs for detailed reason. "
-            "You can try again.",
-            [rebalance_type2text(Type)]),
+    ErrorMsg = lists:flatten(io_lib:format("~p", [_Error])),
+    CbasErrorMsg = binary_to_list(?ERROR_CBAS_MASTER_EJECT_NOT_SUPPORTED),
+    % check if the failure was due to ejecting analytics master
+    case string:str(ErrorMsg, CbasErrorMsg) >= 1 of
+      true -> ErrorDetailedMsg = "Analytics master node must be last analytics node to be removed.";
+      false -> ErrorDetailedMsg = "See logs for detailed reason. You can try again."
+    end,
+    Msg = io_lib:format("~s failed. ~s", [rebalance_type2text(Type), ErrorDetailedMsg]),
     {none, iolist_to_binary(Msg)}.
 
 maybe_start_service_upgrader(normal, unchanged, _State) ->

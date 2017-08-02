@@ -18,6 +18,7 @@
 -define(ERROR_CONFLICT, <<"conflict">>).
 -define(ERROR_NOT_SUPPORTED, <<"operation_not_supported">>).
 -define(ERROR_RECOVERY_IMPOSSIBLE, <<"recovery_impossible">>).
+-define(ERROR_CBAS_MASTER_EJECT_NOT_SUPPORTED, <<"cbas_master_eject_not_supported">>).
 
 -define(TOPOLOGY_CHANGE_REBALANCE, <<"topology-change-rebalance">>).
 -define(TOPOLOGY_CHANGE_FAILOVER, <<"topology-change-failover">>).
