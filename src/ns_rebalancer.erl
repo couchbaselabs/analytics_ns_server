@@ -1385,7 +1385,14 @@ check_failover_possible(Node) ->
                         [Node] ->
                             last_node;
                         _ ->
-                            ok
+                            %% MB-25552 - [CX] Failover not supported for CBAS nodes in DP3
+                            case ns_cluster_membership:service_nodes([Node], cbas) of
+                                %% Node is bound
+                                [Node] ->
+                                    cbas_node;
+                                _ ->
+                                ok
+                            end
                     end;
                 false ->
                     unknown_node

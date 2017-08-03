@@ -3119,6 +3119,8 @@ handle_failover(Req) ->
                     reply_text(Req, "Cluster is in recovery mode.", 503);
                 last_node ->
                     reply_text(Req, "Last active node cannot be failed over.", 400);
+                cbas_node ->
+                    reply_text(Req, "Failing over of analytics nodes not supported in DP3.", 400);
                 unknown_node ->
                     reply_text(Req, "Unknown server given.", 400);
                 Other ->
