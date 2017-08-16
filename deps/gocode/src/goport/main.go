@@ -433,6 +433,7 @@ func (p *port) terminateChild() error {
 			return err
 		}
 	} else {
+		log.Print("killing (-9) child...")
 		err := Kill(p.child)
 		if err != nil {
 			return err

@@ -688,7 +688,7 @@ cbas_spec(Config) ->
                      "-authPort=" ++ integer_to_list(CBASAuthPort),
                      "-logDir=" ++ LogDir
                     ] ++ HttpsOptions,
-                    [via_goport, exit_status, stderr_to_stdout, graceful_shutdown,
+                    [via_goport, exit_status, stderr_to_stdout,
                       {log, ?CBAS_LOG_FILENAME},
                       {env, build_go_env_vars(Config, cbas)}]},
             [Spec]
