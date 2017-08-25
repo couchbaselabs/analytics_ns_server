@@ -772,6 +772,15 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                                     url=url,
                                     log_file="fts_diag.json", no_header=True)]
 
+    cbas_tasks = []
+    cbas_port = read_guts(guts, "cbas_http_port")
+    if cbas_port:
+        url='http://127.0.0.1:%s/analytics/node/diagnostics' % cbas_port
+        cbas_tasks = [make_curl_task(name="CBAS /analytics/node/diagnostics: ",
+                                    user="@", password=memcached_pass,
+                                    url=url,
+                                    log_file="analytics_diag.json", no_header=True)]
+
     _tasks = [
         UnixTask("Directory structure",
                  ["ls", "-lRai", root]),
@@ -916,7 +925,7 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
         make_stats_archives_task(guts, initargs_path)
         ]
 
-    _tasks = flatten([lookup_tasks, query_tasks, index_tasks, projector_tasks, fts_tasks, _tasks])
+    _tasks = flatten([lookup_tasks, query_tasks, index_tasks, projector_tasks, fts_tasks, cbas_tasks, _tasks])
 
     return _tasks
 
