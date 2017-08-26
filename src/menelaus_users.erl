@@ -50,7 +50,7 @@
          cleanup_bucket_roles/1]).
 
 %% callbacks for replicated_dets
--export([init/1, on_save/4, on_empty/1, handle_call/4]).
+-export([init/1, on_save/2, on_empty/1, handle_call/4, handle_info/2]).
 
 -export([start_storage/0, start_replicator/0, start_auth_cache/0]).
 
@@ -134,15 +134,31 @@ init_versions() ->
     gen_event:notify(user_storage_events, {auth_version, {0, Base}}),
     Base.
 
-on_save({user, _}, _Value, _Deleted, State = #state{base = Base}) ->
-    Ver = ets:update_counter(versions_name(), user_version, 1),
-    gen_event:notify(user_storage_events, {user_version, {Ver, Base}}),
-    State;
-on_save({auth, Identity}, Value, Deleted, State = #state{base = Base}) ->
-    NewState = maybe_update_passwordless(Identity, Value, Deleted, State),
-    Ver = ets:update_counter(versions_name(), auth_version, 1),
-    gen_event:notify(user_storage_events, {auth_version, {Ver, Base}}),
+on_save(Docs, State) ->
+    {MessagesToSend, NewState} =
+        lists:foldl(
+          fun (Doc, {MessagesAcc, StateAcc}) ->
+                  case replicated_dets:get_id(Doc) of
+                      {user, _} ->
+                          {sets:add_element({change_version, user_version}, MessagesAcc), StateAcc};
+                      {auth, Identity} ->
+                          NState = maybe_update_passwordless(Identity,
+                                                             replicated_dets:get_value(Doc),
+                                                             replicated_dets:is_deleted(Doc),
+                                                             StateAcc),
+                          {sets:add_element({change_version, auth_version}, MessagesAcc), NState}
+                  end
+          end, {sets:new(), State}, Docs),
+    lists:foreach(fun (Msg) ->
+                          self() ! Msg
+                  end, sets:to_list(MessagesToSend)),
     NewState.
+
+handle_info({change_version, Key} = Msg, #state{base = Base} = State) ->
+    misc:flush(Msg),
+    Ver = ets:update_counter(versions_name(), Key, 1),
+    gen_event:notify(user_storage_events, {Key, {Ver, Base}}),
+    {noreply, State}.
 
 on_empty(_State) ->
     true = ets:delete_all_objects(versions_name()),
@@ -292,7 +308,7 @@ store_user_spock({_UserName, Domain} = Identity, Props, Password, Roles, Config)
 store_user_spock_with_auth(Identity, Props, Auth, Roles, Config) ->
     case menelaus_roles:validate_roles(Roles, Config) of
         {NewRoles, []} ->
-            store_user_spock_validated(Identity, [{roles, NewRoles} | Props], Auth),
+            ok = store_user_spock_validated(Identity, [{roles, NewRoles} | Props], Auth),
             {commit, ok};
         {_, BadRoles} ->
             {abort, {error, roles_validation, BadRoles}}
@@ -300,7 +316,12 @@ store_user_spock_with_auth(Identity, Props, Auth, Roles, Config) ->
 
 store_user_spock_validated(Identity, Props, Auth) ->
     ok = replicated_dets:set(storage_name(), {user, Identity}, Props),
-    store_auth(Identity, Auth).
+    case store_auth(Identity, Auth) of
+        ok ->
+            ok;
+        unchanged ->
+            ok
+    end.
 
 store_auth(_Identity, same) ->
     unchanged;

@@ -19,12 +19,12 @@
         <span mn-sortable-title="index" class="sorter">index name</span>
       </span>
       <span class="cbui-table-cell">
-        <span mn-sortable-title="storageMode | mnFormatStorageMode" class="sorter">storage type</span>
+        <span mn-sortable-title="storageMode | mnFormatStorageMode:pools.isEnterprise" class="sorter">storage type</span>
       </span>
-      <span class="cbui-table-cell">
+      <span class="cbui-table-cell flex-grow-half">
         <span mn-sortable-title="status" class="sorter">status</span>
       </span>
-      <span class="cbui-table-cell">build progress</span>
+      <span class="cbui-table-cell flex-grow-half">build progress</span>
     </div>
     <section
        ng-if="gsiCtl.state.indexes.length"
@@ -36,10 +36,10 @@
           <span ng-class="{closed:!gsiCtl.isDetailsOpened(gsiCtl.generateIndexId(row))}">{{row.bucket}}</span>
         </span>
         <span class="cbui-table-cell">{{row.hosts[0]}}</span>
-        <span class="cbui-table-cell">{{row.index}}</span>
-        <span class="cbui-table-cell">{{row.storageMode | mnFormatStorageMode}}</span>
-        <span class="cbui-table-cell">{{row.status}}</span>
-        <span class="cbui-table-cell"><span ng-if="row.progress">{{row.progress}}%</span></span>
+        <span class="cbui-table-cell" title="{{row.index}}">{{row.index}}</span>
+        <span class="cbui-table-cell">{{row.storageMode | mnFormatStorageMode:pools.isEnterprise}}</span>
+        <span class="cbui-table-cell flex-grow-half nocaps">{{row.status}}</span>
+        <span class="cbui-table-cell flex-grow-half"><span ng-if="row.progress">{{row.progress}}%</span></span>
       </div>
       <div class="cbui-tablerow-expanded" ng-if="gsiCtl.isDetailsOpened(gsiCtl.generateIndexId(row))">
         <div class="content-box cursor-auto" ng-click="$event.stopPropagation();">

@@ -118,9 +118,6 @@ class Task(object):
         self.command = command
         self.timeout = timeout
         self.__dict__.update(kwargs)
-        if not hasattr(self, 'command_to_print'):
-            self.command_to_print = self.command
-
         self._is_posix = (os.name == 'posix')
 
     def _platform_popen_flags(self):
@@ -184,6 +181,9 @@ class Task(object):
                                  stderr=subprocess.STDOUT,
                                  shell=use_shell,
                                  **extra_flags)
+            if hasattr(self, 'to_stdin'):
+                p.stdin.write(self.to_stdin)
+
         except OSError, e:
             # if use_shell is False then Popen may raise exception
             # if binary is missing. In this case we mimic what
@@ -191,7 +191,7 @@ class Task(object):
             # setting non-zero status code. It's might also
             # automatically handle things like "failed to fork due
             # to some system limit".
-            print >> fp, "Failed to execute %s: %s" % (self.command_to_print, e)
+            print >> fp, "Failed to execute %s: %s" % (self.command, e)
             return 127
         p.stdin.close()
 
@@ -229,7 +229,7 @@ class Task(object):
                 # timer is fired; that would result in a spurious timeout
                 # message
                 if timer_fired.isSet():
-                    print >> fp, "`%s` timed out after %s seconds" % (self.command_to_print, self.timeout)
+                    print >> fp, "`%s` timed out after %s seconds" % (self.command, self.timeout)
 
         return p.wait()
 
@@ -241,11 +241,28 @@ class Task(object):
 class TaskRunner(object):
     default_name = "couchbase.log"
 
-    def __init__(self, verbosity=0, task_regexp=''):
+    def __init__(self, verbosity=0, task_regexp='', tmp_dir=None):
         self.files = {}
         self.verbosity = verbosity
         self.start_time = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        self.tmpdir = tempfile.mkdtemp()
+
+        # Depending on platform, mkdtemp() may act unpredictably if passed an empty string.
+        if not tmp_dir:
+            tmp_dir = None
+        else:
+            tmp_dir = os.path.abspath(os.path.expanduser(tmp_dir))
+
+        try:
+            self.tmpdir = tempfile.mkdtemp(dir=tmp_dir)
+        except OSError as e:
+           print "Could not use temporary dir {0}: {1}".format(tmp_dir, e)
+           sys.exit(1)
+
+        # If a dir wasn't passed by --tmp-dir, check if the env var was set and if we were able to use it
+        if not tmp_dir and os.getenv("TMPDIR") and os.path.split(self.tmpdir)[0] != os.getenv("TMPDIR"):
+                log("Could not use TMPDIR {0}".format(os.getenv("TMPDIR")))
+        log("Using temporary dir {0}".format(os.path.split(self.tmpdir)[0]))
+
         self.task_regexp = re.compile(task_regexp)
 
         AltExit.register(self.finalize)
@@ -311,7 +328,7 @@ class TaskRunner(object):
     def _run(self, task):
         """Run a task with a file descriptor corresponding to its log file"""
         if task.will_run():
-            log("%s (%s) - " % (task.description, task.command_to_print), new_line=False)
+            log("%s (%s) - " % (task.description, task.command), new_line=False)
             if task.privileged and os.getuid() != 0:
                 log("skipped (needs root privs)")
                 return
@@ -321,7 +338,7 @@ class TaskRunner(object):
             filename = getattr(task, 'log_file', self.default_name)
             fp = self.get_file(filename)
             if not task.no_header:
-                self.header(fp, task.description, task.command_to_print)
+                self.header(fp, task.description, task.command)
 
             for i in xrange(task.num_samples):
                 if i > 0:
@@ -342,7 +359,7 @@ class TaskRunner(object):
             fp.flush()
 
         elif self.verbosity >= 2:
-            log('Skipping "%s" (%s): not for platform %s' % (task.description, task.command_to_print, sys.platform))
+            log('Skipping "%s" (%s): not for platform %s' % (task.description, task.command, sys.platform))
 
     def literal(self, description, value, **kwargs):
         self.run(LiteralTask(description, value, **kwargs))
@@ -418,7 +435,6 @@ class LiteralTask(AllOsTask):
     def __init__(self, description, literal, **kwargs):
         self.description = description
         self.command = ''
-        self.command_to_print = ''
         self.literal = literal
         self.__dict__.update(kwargs)
 
@@ -430,7 +446,6 @@ class CollectFile(AllOsTask):
     def __init__(self, description, file_path, **kwargs):
         self.description = description
         self.command = ''
-        self.command_to_print = ''
         self.file_path = file_path
         self.__dict__.update(kwargs)
 
@@ -442,25 +457,20 @@ class CollectFile(AllOsTask):
 def make_curl_task(name, user, password, url,
                    timeout=60, log_file="couchbase.log", base_task=AllOsTask,
                    **kwargs):
-    def make_cmd(pwd):
-        return ["curl", "-sS", "--proxy", "",
-                "-u", "%s:%s" % (user, pwd), url]
-
-    return base_task(name, make_cmd(password),
+    return base_task(name, ["curl", "-sS", "--proxy", "", "-K-", url],
                      timeout=timeout,
                      log_file=log_file,
-                     command_to_print=make_cmd("*****"), **kwargs)
+                     to_stdin="--user %s:%s" % (user, password),
+                     **kwargs)
 
 def make_cbstats_task(kind, memcached_pass, guts):
     port = read_guts(guts, "memcached_port")
     user = read_guts(guts, "memcached_admin")
-    def make_cmd(pwd):
-        return flatten(["cbstats", "-a", "127.0.0.1:%s" % port, kind, "-b", user, "-p", pwd])
     return AllOsTask("memcached stats %s" % kind,
-                     make_cmd(memcached_pass),
+                     flatten(["cbstats", "-a", "127.0.0.1:%s" % port, kind, "-b", user]),
                      log_file="stats.log",
                      timeout=60,
-                     command_to_print=make_cmd("*****"))
+                     addenv=[("CB_PASSWORD", memcached_pass)])
 
 def get_local_token(guts, port):
     path = read_guts(guts, "localtoken_path")
@@ -533,7 +543,7 @@ def make_os_tasks():
         UnixTask("ntp time",
                  "ntpdate -q pool.ntp.org || "
                  "nc time.nist.gov 13 || "
-                 "netcat time.nist.gov 13"),
+                 "netcat time.nist.gov 13", timeout=60),
         UnixTask("ntp peers", "ntpq -p"),
         UnixTask("raw /etc/sysconfig/clock", "cat /etc/sysconfig/clock"),
         UnixTask("raw /etc/timezone", "cat /etc/timezone"),
@@ -595,7 +605,7 @@ def make_os_tasks():
         LinuxTask("Raw /proc/net/dev", "cat /proc/net/dev"),
         LinuxTask("Network link statistics", "ip -s link"),
         UnixTask("Network status", "netstat -anp || netstat -an"),
-        WindowsTask("Network status", "netstat -ano"),
+        WindowsTask("Network status", "netstat -anotb"),
         AllOsTask("Network routing table", "netstat -rn"),
         LinuxTask("Network socket statistics", "ss -an"),
         LinuxTask("Extended socket statistics", "ss -an --info --processes"),
@@ -815,7 +825,7 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
         # TODO: just gather those in python
         WindowsTask("Memcached logs",
                     "cd " + winquote_path(read_guts(guts, "memcached_logs_path")) + " && " +
-                    "for /f %a IN ('dir /od /b memcached.log.*') do type %a",
+                    "for /f %a IN ('dir memcached.log.* /od /tw /b') do type %a",
                     log_file="memcached.log"),
         UnixTask("Memcached logs",
                  ["sh", "-c", 'cd "$1"; for file in $(ls -tr memcached.log.*); do cat \"$file\"; done', "--", read_guts(guts, "memcached_logs_path")],
@@ -870,18 +880,18 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                       "kvstore", "kvtimings", "memory",
                       "prev-vbucket",
                       "runtimes", "scheduler",
-                      "tap", "tapagg", "tasks",
+                      "tasks",
                       "timings", "uuid",
                       "vbucket", "vbucket-details", "vbucket-seqno",
                       "warmup", "workload"]],
 
         [AllOsTask("memcached mcstat %s" % kind,
                    flatten(["mcstat", "-h", "127.0.0.1:%s" % read_guts(guts, "memcached_port"),
-                            "-u", read_guts(guts, "memcached_admin"),
-                            "-P", memcached_pass, kind]),
+                            "-u", read_guts(guts, "memcached_admin"), kind]),
                    log_file="stats.log",
-                   timeout=60)
-         for kind in ["connections"]],
+                   timeout=60,
+                   addenv=[("CB_PASSWORD", memcached_pass)])
+         for kind in ["connections", "tracing"]],
 
         [AllOsTask("fts mossScope (%s)" % path,
                    ["mossScope", "stats", "diag", path],
@@ -913,16 +923,26 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
         [AllOsTask("mctimings",
                    ["mctimings",
                     "-u", read_guts(guts, "memcached_admin"),
-                    "-P", memcached_pass,
                     "-h", "127.0.0.1:%s" % read_guts(guts, "memcached_port"),
                     "-v"] + stat,
                    log_file="stats.log",
-                   timeout=60)
+                   timeout=60,
+                   addenv=[("CB_PASSWORD", memcached_pass)])
          for stat in ([], ["subdoc_execute"])],
 
         CollectFile("Users storage", read_guts(guts, "users_storage_path")),
 
-        make_stats_archives_task(guts, initargs_path)
+        make_stats_archives_task(guts, initargs_path),
+        AllOsTask("Phosphor Trace",
+                  ["kv_trace_dump",
+                   "-H", "127.0.0.1:%s" % read_guts(guts, "memcached_port"),
+                   "-u", read_guts(guts, "memcached_admin"),
+                   "-P", memcached_pass,
+                   "kv_trace.json"],
+                  timeout=120,
+                  log_file="stats.log",
+                  change_dir=True,
+                  artifacts=["kv_trace.json"]),
         ]
 
     _tasks = flatten([lookup_tasks, query_tasks, index_tasks, projector_tasks, fts_tasks, cbas_tasks, _tasks])
@@ -1159,6 +1179,8 @@ def main():
     parser.add_option("--task-regexp", dest="task_regexp",
                       default="",
                       help="Run only tasks matching regexp. For debugging purposes only.")
+    parser.add_option("--tmp-dir", dest="tmp_dir", default=None,
+                      help="set the temp dir used while processing collected data. Overrides the TMPDIR env variable if set")
     options, args = parser.parse_args()
 
     if len(args) != 1:
@@ -1206,7 +1228,8 @@ def main():
         do_upload_and_exit(args[0], options.just_upload_into)
 
     runner = TaskRunner(verbosity=options.verbosity,
-                        task_regexp=options.task_regexp)
+                        task_regexp=options.task_regexp,
+                        tmp_dir=options.tmp_dir)
 
     if not options.product_only:
         runner.run_tasks(make_os_tasks())

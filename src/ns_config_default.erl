@@ -391,6 +391,9 @@ default() ->
 
      {buckets, [{configs, []}]},
 
+     %% Secure headers config
+     {secure_headers, []},
+
      %% Moxi config. This is
      %% per-node so command
      %% line override

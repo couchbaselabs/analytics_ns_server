@@ -268,7 +268,7 @@
         controller: 'mnDocumentsEditingController as documentsEditingCtl',
         templateUrl: 'app/mn_admin/mn_documents/editing/mn_documents_editing.html',
         data: {
-          child: parent + ".documents",
+          child: parent + ".documents.control.list",
           title: "Documents Editing"
         }
       });
@@ -294,8 +294,6 @@
           }
         },
         data: {
-          title: "Statistics",
-          child: parent,
           permissions: "cluster.bucket['.'].settings.read && " +
             "cluster.bucket['.'].stats.read && cluster.stats.read"
         }
@@ -318,6 +316,10 @@
             dynamic: true
           }
         },
+        data: {
+          title: "Statistics",
+          child: parent
+        },
         controller: 'mnAnalyticsListController as analyticsListCtl',
         templateUrl: 'app/mn_admin/mn_analytics/mn_analytics_list.html',
         redirectTo: function (trans) {
@@ -326,10 +328,10 @@
           params.zoom = params.transZoom || "minute";
           params.graph = params.transGraph;
           return mnAnalyticsService.getStats({$stateParams: params}).then(function (state) {
+            function checkLackOfParam(paramName) {
+              return !params[paramName] || !params[paramName].length || !_.intersection(params[paramName], _.pluck(state.statsDirectoryBlocks, 'blockName')).length;
+            }
             if (!state.status) {
-              function checkLackOfParam(paramName) {
-                return !params[paramName] || !params[paramName].length || !_.intersection(params[paramName], _.pluck(state.statsDirectoryBlocks, 'blockName')).length;
-              }
               if (params.specificStat) {
                 if (checkLackOfParam("openedSpecificStatsBlock")) {
                   params.openedSpecificStatsBlock = [state.statsDirectoryBlocks[0].blockName];
@@ -359,9 +361,29 @@
                 }
               }
             }
-            return {state: parent + ".analytics.list.graph", params: params};
+            return {state: parent + ".analytics.list" + (params.specificStat ? ".specificGraph" : ".graph"), params: params};
           });
         }
+      })
+      .state(parent + '.analytics.list.specificGraph', {
+        url: '/specific/:graph?zoom',
+        params: {
+          graph: {
+            value: null
+          },
+          zoom: {
+            value: null
+          }
+        },
+        data: {
+          title: "Specific",
+          child: parent + ".analytics.list",
+          childParams: {
+            specificStat: null
+          }
+        },
+        controller: 'mnAnalyticsListGraphController as analyticsListGraphCtl',
+        templateUrl: 'app/mn_admin/mn_analytics/mn_analytics_list_graph.html'
       })
       .state(parent + '.analytics.list.graph', {
         url: '/:graph?zoom',

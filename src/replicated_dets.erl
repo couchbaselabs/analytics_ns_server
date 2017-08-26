@@ -26,13 +26,14 @@
          select_with_update/4]).
 
 -export([init/1, init_after_ack/1, handle_call/3, handle_info/2,
-         get_id/1, find_doc/2, get_all_docs/1,
-         get_revision/1, set_revision/2, is_deleted/1, save_doc/2, handle_mass_update/3]).
+         get_id/1, get_value/1, find_doc/2, find_doc_rev/2, all_docs/1,
+         get_revision/1, set_revision/2, is_deleted/1, save_docs/2, handle_mass_update/3]).
 
 -record(state, {child_module :: atom(),
                 child_state :: term(),
                 path :: string(),
-                name :: atom()}).
+                name :: atom(),
+                revisions :: term()}).
 
 -record(doc, {id :: term(),
               rev :: term(),
@@ -111,8 +112,10 @@ select(Name, KeySpec, N, Locked) ->
         end,
 
     ?make_producer(Select(Name, MatchSpec, N,
-                          fun (#doc{id = Id, value = Value}) ->
-                                  ?yield({Id, Value})
+                          fun (Selection) ->
+                                  lists:foreach(fun (#doc{id = Id, value = Value}) ->
+                                                        ?yield({Id, Value})
+                                                end, Selection)
                           end)).
 
 select_with_update(Name, KeySpec, N, UpdateFun) ->
@@ -146,21 +149,59 @@ init([Name, ChildModule, InitParams, Path, Replicator, CacheSize]) ->
            child_module = ChildModule,
            child_state = ChildState}.
 
-init_after_ack(State) ->
+init_after_ack(State = #state{name = TableName}) ->
     ok = open(State),
-    State.
+    Revisions = ets:new(ok, [set, private]),
+    MatchSpec = [{#doc{id = '$1', rev = '$2', _ = '_'}, [], [{{'$1', '$2'}}]}],
+
+    Start = os:timestamp(),
+    select_from_dets_locked(TableName, MatchSpec, 100,
+                            fun (Selection) ->
+                                    ets:insert_new(Revisions, Selection)
+                            end),
+    ?log_debug("Loading ~p items, ~p words took ~pms",
+               [ets:info(Revisions, size),
+                ets:info(Revisions, memory),
+                timer:now_diff(os:timestamp(), Start) div 1000]),
+
+    State#state{revisions = Revisions}.
 
 open(#state{path = Path, name = TableName}) ->
-    {ok, TableName} =
-        dets:open_file(TableName,
-                       [{type, set},
-                        {auto_save, ns_config:read_key_fast(replicated_dets_auto_save, 60000)},
-                        {keypos, #doc.id},
-                        {file, Path}]),
-    ok.
+    ?log_debug("Opening file ~p", [Path]),
+    case do_open(Path, TableName, 3) of
+        ok ->
+            ok;
+        error ->
+            {A, B, C} = erlang:now(),
+            Backup = lists:flatten(
+                       io_lib:format(
+                         "~s.~4..0b-~6..0b-~6..0b.bak", [Path, A, B, C])),
+            ?log_error("Renaming possibly corrupted dets file ~p to ~p", [Path, Backup]),
+            ok = file:rename(Path, Backup),
+            ok = do_open(Path, TableName, 1)
+    end.
+
+do_open(_Path, _TableName, 0) ->
+    error;
+do_open(Path, TableName, Tries) ->
+    case dets:open_file(TableName,
+                        [{type, set},
+                         {auto_save, ns_config:read_key_fast(replicated_dets_auto_save, 60000)},
+                         {keypos, #doc.id},
+                         {file, Path}]) of
+        {ok, TableName} ->
+            ok;
+        Error ->
+            ?log_error("Unable to open ~p, Error: ~p", [Path, Error]),
+            timer:sleep(1000),
+            do_open(Path, TableName, Tries - 1)
+    end.
 
 get_id(#doc{id = Id}) ->
     Id.
+
+get_value(#doc{value = Value}) ->
+    Value.
 
 find_doc(Id, #state{name = TableName}) ->
     case dets:lookup(TableName, Id) of
@@ -170,11 +211,17 @@ find_doc(Id, #state{name = TableName}) ->
             false
     end.
 
-get_all_docs(#state{name = TableName}) ->
-    %% TODO to be replaced with something that does not read the whole thing to memory
-    dets:foldl(fun(Doc, Acc) ->
-                       [Doc | Acc]
-               end, [], TableName).
+find_doc_rev(Id, #state{revisions = Revisions}) ->
+    case ets:lookup(Revisions, Id) of
+        [{Id, Rev}] ->
+            Rev;
+        [] ->
+            false
+    end.
+
+all_docs(Pid) ->
+    ?make_producer(select_from_dets(Pid, [{'_', [], ['$_']}], 500,
+                                    fun (Batch) -> ?yield({batch, Batch}) end)).
 
 get_revision(#doc{rev = Rev}) ->
     Rev.
@@ -185,20 +232,18 @@ set_revision(Doc, NewRev) ->
 is_deleted(#doc{deleted = Deleted}) ->
     Deleted.
 
-save_doc(#doc{id = Id,
-              deleted = Deleted,
-              value = Value} = Doc,
-         #state{name = TableName,
-                child_module = ChildModule,
-                child_state = ChildState} = State) ->
-    ok = dets:insert(TableName, [Doc]),
-    case Deleted of
-        true ->
-            _ = mru_cache:delete(TableName, Id);
-        false ->
-            _ = mru_cache:update(TableName, Id, Value)
-    end,
-    NewChildState = ChildModule:on_save(Id, Value, Deleted, ChildState),
+save_docs(Docs, #state{name = TableName,
+                       child_module = ChildModule,
+                       child_state = ChildState,
+                       revisions = Revisions} = State) ->
+    ok = dets:insert(TableName, Docs),
+    true = ets:insert(Revisions, [{Doc#doc.id, Doc#doc.rev} || Doc <- Docs]),
+    lists:foreach(fun (#doc{id = Id, deleted = true}) ->
+                          _ = mru_cache:delete(TableName, Id);
+                      (#doc{id = Id, deleted = false, value = Value}) ->
+                          _ = mru_cache:update(TableName, Id, Value)
+                  end, Docs),
+    NewChildState = ChildModule:on_save(Docs, ChildState),
     {ok, State#state{child_state = NewChildState}}.
 
 handle_call(suspend, {Pid, _} = From, #state{name = TableName} = State) ->
@@ -216,8 +261,10 @@ handle_call(suspend, {Pid, _} = From, #state{name = TableName} = State) ->
     end;
 handle_call(empty, _From, #state{name = TableName,
                                  child_module = ChildModule,
-                                 child_state = ChildState} = State) ->
+                                 child_state = ChildState,
+                                 revisions = Revisions} = State) ->
     ok = dets:delete_all_objects(TableName),
+    true = ets:delete_all_objects(Revisions),
     mru_cache:flush(TableName),
     NewChildState = ChildModule:on_empty(ChildState),
     {reply, ok, State#state{child_state = NewChildState}};
@@ -235,7 +282,11 @@ handle_info({cache, Id} = Msg, #state{name = TableName} = State) ->
             ok
     end,
     misc:flush(Msg),
-    {noreply, State}.
+    {noreply, State};
+handle_info(Msg, #state{child_module = ChildModule,
+                        child_state = ChildState} = State) ->
+    {noreply, NewChildState} = ChildModule:handle_info(Msg, ChildState),
+    {noreply, State#state{child_state = NewChildState}}.
 
 select_from_dets(Name, MatchSpec, N, Yield) ->
     {ok, TableName} = gen_server:call(Name, suspend, infinity),
@@ -259,7 +310,7 @@ do_select_from_dets(TableName, MatchSpec, N, Yield) ->
     end.
 
 do_select_from_dets_continue(Selection, Continuation, Yield) ->
-    lists:foreach(Yield, Selection),
+    Yield(Selection),
     case dets:select(Continuation) of
         {Selection2, Continuation2} when is_list(Selection2) ->
             do_select_from_dets_continue(Selection2, Continuation2, Yield);

@@ -26,11 +26,12 @@
 -callback init_after_ack(term()) -> term().
 -callback get_id(term()) -> term().
 -callback find_doc(term(), term()) -> term() | false.
--callback get_all_docs(term()) -> [term()].
+-callback find_doc_rev(term(), term()) -> term() | false.
+-callback all_docs(pid()) -> term().
 -callback get_revision(term()) -> term().
 -callback set_revision(term(), term()) -> term().
 -callback is_deleted(term()) -> boolean().
--callback save_doc(term(), term()) -> {ok, term()} | {error, term()}.
+-callback save_docs([term()], term()) -> {ok, term()} | {error, term()}.
 
 -include("ns_common.hrl").
 -include("pipes.hrl").
@@ -111,7 +112,7 @@ handle_call({interactive_update, Doc}, _From,
         false ->
             NewDoc = Module:set_revision(Doc, NewRev),
             ?log_debug("Writing interactively saved doc ~p", [NewDoc]),
-            case Module:save_doc(NewDoc, ChildState) of
+            case Module:save_docs([NewDoc], ChildState) of
                 {ok, NewChildState} ->
                     Replicator ! {replicate_change, NewDoc},
                     {reply, ok, State#state{child_state = NewChildState}};
@@ -159,27 +160,24 @@ handle_call(Msg, From, #state{child_module = Module, child_state = ChildState} =
             {noreply, State#state{child_state = NewChildState}}
     end.
 
+handle_cast({replicated_batch, CompressedBatch}, #state{child_module = Module,
+                                                        child_state = ChildState} = State) ->
+    ?log_debug("Applying replicated batch. Size: ~p", [size(CompressedBatch)]),
+    Batch = misc:decompress(CompressedBatch),
+    DocsToWrite =
+        lists:filter(fun (Doc) ->
+                             should_be_written(Doc, Module, ChildState)
+                     end, Batch),
+    {ok, NewChildState} = Module:save_docs(DocsToWrite, ChildState),
+    {noreply, State#state{child_state = NewChildState}};
 handle_cast({replicated_update, Doc}, #state{child_module = Module,
                                              child_state = ChildState} = State) ->
-    %% this is replicated from another node in the cluster. We only accept it
-    %% if it doesn't exist or the rev is higher than what we have.
-    Rev = Module:get_revision(Doc),
-    Proceed = case Module:find_doc(Module:get_id(Doc), ChildState) of
-                  false ->
-                      true;
-                  ExistingDoc ->
-                      case Module:get_revision(ExistingDoc) of
-                          DiskRev when Rev > DiskRev ->
-                              true;
-                          _ ->
-                              false
-                      end
-              end,
-    if Proceed ->
+    case should_be_written(Doc, Module, ChildState) of
+        true ->
             ?log_debug("Writing replicated doc ~p", [Doc]),
-            {ok, NewChildState} = Module:save_doc(Doc, ChildState),
+            {ok, NewChildState} = Module:save_docs([Doc], ChildState),
             {noreply, State#state{child_state = NewChildState}};
-       true ->
+        false ->
             {noreply, State}
     end;
 handle_cast(Msg, #state{child_module = Module, child_state = ChildState} = State) ->
@@ -187,9 +185,8 @@ handle_cast(Msg, #state{child_module = Module, child_state = ChildState} = State
     {noreply, State#state{child_state = NewChildState}}.
 
 handle_info(replicate_newnodes_docs, #state{child_module = Module,
-                                            child_state = ChildState,
                                             replicator = Replicator} = State) ->
-    Replicator ! {replicate_newnodes_docs, Module:get_all_docs(ChildState)},
+    Replicator ! {replicate_newnodes_docs, Module:all_docs(self())},
     {noreply, State};
 handle_info(Msg, #state{child_module = Module, child_state = ChildState} = State) ->
     {noreply, NewChildState} = Module:handle_info(Msg, ChildState),
@@ -200,3 +197,16 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+should_be_written(Doc, Module, ChildState) ->
+    %% this is replicated from another node in the cluster. We only accept it
+    %% if it doesn't exist or the rev is higher than what we have.
+    Rev = Module:get_revision(Doc),
+    case Module:find_doc_rev(Module:get_id(Doc), ChildState) of
+        false ->
+            true;
+        DiskRev when Rev > DiskRev ->
+            true;
+        _ ->
+            false
+    end.

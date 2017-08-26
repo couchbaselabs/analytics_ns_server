@@ -19,6 +19,7 @@
 -module(doc_replicator).
 
 -include("ns_common.hrl").
+-include("pipes.hrl").
 
 -export([start_link/4]).
 
@@ -47,10 +48,12 @@ loop(Module, GetNodes, StorageFrontend, RemoteNodes) ->
     NewRemoteNodes =
         receive
             {replicate_change, Doc} ->
-                [replicate_change_to_node(Module, StorageFrontend, Node, Doc)
-                 || Node <- RemoteNodes],
+                lists:foreach(
+                  fun (Node) ->
+                          replicate_change_to_node(Module, StorageFrontend, Node, Doc)
+                  end, RemoteNodes),
                 RemoteNodes;
-            {replicate_newnodes_docs, Docs} ->
+            {replicate_newnodes_docs, Producer} ->
                 AllNodes = GetNodes(),
                 ?log_debug("doing replicate_newnodes_docs"),
 
@@ -59,10 +62,19 @@ loop(Module, GetNodes, StorageFrontend, RemoteNodes) ->
                     [] ->
                         ok;
                     _ ->
-                        [monitor(process, {StorageFrontend, Node}) || Node <- NewNodes],
-                        [replicate_change_to_node(Module, StorageFrontend, S, D)
-                         || S <- NewNodes,
-                            D <- Docs]
+                        lists:foreach(
+                          fun (Node) ->
+                                  monitor(process, {StorageFrontend, Node})
+                          end, NewNodes),
+                        pipes:foreach(
+                          Producer,
+                          fun (Docs) ->
+                                  lists:foreach(
+                                    fun (Node) ->
+                                            replicate_changes_to_node(Module, StorageFrontend,
+                                                                      Node, Docs)
+                                    end, NewNodes)
+                          end)
                 end,
                 AllNodes;
             {sync_token, From} ->
@@ -89,6 +101,16 @@ loop(Module, GetNodes, StorageFrontend, RemoteNodes) ->
         end,
 
     loop(Module, GetNodes, StorageFrontend, NewRemoteNodes).
+
+replicate_changes_to_node(_Module, StorageFrontend, Node, {batch, Docs}) ->
+    CompressedBatch = misc:compress(Docs),
+    ?log_debug("Sending batch of size ~p to ~p", [size(CompressedBatch), Node]),
+    gen_server:cast({StorageFrontend, Node}, {replicated_batch, CompressedBatch});
+replicate_changes_to_node(Module, StorageFrontend, Node, Docs) ->
+    lists:foreach(
+      fun (Doc) ->
+              replicate_change_to_node(Module, StorageFrontend, Node, Doc)
+      end, Docs).
 
 replicate_change_to_node(Module, StorageFrontend, Node, Doc) ->
     ?log_debug("Sending ~p to ~p", [Module:get_id(Doc), Node]),

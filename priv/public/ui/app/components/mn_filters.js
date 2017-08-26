@@ -101,11 +101,11 @@
     }
   }
   function mnFormatStorageMode() {
-    return function (value) {
+    return function (value, isEnterprise) {
       switch (value) {
-      case "plasma": return "Standard Global Secondary Indexes";
-      case "forestdb": return "Legacy Global Secondary Indexes";
-      case "memory_optimized": return "Memory-Optimized Global Secondary Indexes";
+      case "plasma": return "Standard GSI";
+      case "forestdb": return (isEnterprise ? "Legacy" : "Standard") + " GSI";
+      case "memory_optimized": return "Memory Optimized GSI";
       default: return value;
       }
     };

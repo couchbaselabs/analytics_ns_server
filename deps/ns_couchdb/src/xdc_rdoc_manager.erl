@@ -16,6 +16,7 @@
 -module(xdc_rdoc_manager).
 -include("couch_db.hrl").
 -include("ns_common.hrl").
+-include("pipes.hrl").
 
 -behaviour(replicated_storage).
 
@@ -28,8 +29,8 @@
          pull_docs/1]).
 
 -export([init/1, init_after_ack/1, handle_call/3,
-         get_id/1, find_doc/2, get_all_docs/1,
-         get_revision/1, set_revision/2, is_deleted/1, save_doc/2]).
+         get_id/1, find_doc/2, find_doc_rev/2, all_docs/1,
+         get_revision/1, set_revision/2, is_deleted/1, save_docs/2]).
 
 -record(state, {rep_manager :: pid(),
                 local_docs = [] :: [#doc{}]}).
@@ -92,8 +93,16 @@ get_id(#doc{id = Id}) ->
 find_doc(Id, #state{local_docs = Docs}) ->
     lists:keyfind(Id, #doc.id, Docs).
 
-get_all_docs(#state{local_docs = Docs}) ->
-    Docs.
+find_doc_rev(Id, State) ->
+    case find_doc(Id, State) of
+        false ->
+            false;
+        #doc{rev = Rev} ->
+            Rev
+    end.
+
+all_docs(Pid) ->
+    ?make_producer(?yield(gen_server:call(Pid, get_all_docs, infinity))).
 
 get_revision(#doc{rev = Rev}) ->
     Rev.
@@ -104,9 +113,9 @@ set_revision(Doc, NewRev) ->
 is_deleted(_) ->
     false.
 
-save_doc(#doc{id = Id} = Doc,
-         #state{local_docs = Docs,
-                rep_manager = RepManager}=State) ->
+save_docs([#doc{id = Id} = Doc],
+          #state{local_docs = Docs,
+                 rep_manager = RepManager}=State) ->
     RepManager ! {rep_db_update, Doc},
 
     {ok, Db} = open_replicator_db(),
