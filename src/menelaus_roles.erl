@@ -313,6 +313,18 @@ roles_spock() ->
       [{[{bucket, bucket_name}, settings], [read]},
        {[{bucket, bucket_name}, data, meta], [read, write]},
        {[{bucket, bucket_name}, stats], [read]},
+       {[pools], [read]}]},
+    {analytics_manage, [bucket_name],
+      [{name, <<"Analytics Manage">>},
+       {desc, <<"Can manage Analytics buckets and shadow datasets on which they have bucket permissions">>}],
+      [{[{bucket, bucket_name}, analytics], [manage, read]},
+       {[ui], [read]},
+       {[pools], [read]}]},
+    {analytics_select, [bucket_name],
+      [{name, <<"Analytics Select">>},
+       {desc, <<"Can execute SELECT on Analytics shadow datasets on which they have bucket permissions">>}],
+      [{[{bucket, bucket_name}, analytics], [read]},
+       {[ui], [read]},
        {[pools], [read]}]}].
 
 -spec get_definitions() -> [rbac_role_def(), ...].
