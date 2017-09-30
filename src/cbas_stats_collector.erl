@@ -35,8 +35,8 @@ init([]) ->
 
 %% Those are not part of any graphs yet, but otherwise dialyzer
 %% doesn't like trying to deal with empty gauges below.
--define(Q_GAUGES, ['heap-used', 'system-load-average', 'thread-count', 'gc-time', 'gc-count', 'io-reads', 'io-writes']).
--define(Q_COUNTERS, []).
+-define(Q_GAUGES, ['heap-used', 'system-load-average', 'thread-count']).
+-define(Q_COUNTERS, ['gc-time', 'gc-count', 'io-reads', 'io-writes']).
 
 recognize_name(K) ->
     case ets:lookup(cbas_stats_collector_names, K) of

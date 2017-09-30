@@ -37,27 +37,4 @@ get_timeout() ->
     30000.
 
 do_get_stats() ->
-    NodeInfoURL = lists:flatten(io_lib:format("http://127.0.0.1:~B/~s", [get_port(), "analytics/node/stats"])),
-    NodeInfo  = proc_rv(send("GET", NodeInfoURL, get_timeout())),
-    {ok, {NodeInfo}}.
-
-proc_rv(RV) ->
-    case RV of
-        {200, _Headers, BodyRaw} ->
-            case (catch ejson:decode(BodyRaw)) of
-                {[_ | _] = Stats} ->
-                    Stats;
-                Err ->
-                    ?log_error("Failed to parse analytics stats: ~p", [Err]),
-                    []
-            end;
-        _ ->
-            ?log_error("Ignoring. Failed to grab stats: ~p", [RV]),
-            []
-    end.
-
-send(Method, URL, Timeout) ->
-    % MB-26150 - [CX] Add authentication to stats API
-    {ok, {{Code, _}, RespHeaders, RespBody}} =
-        rest_utils:request(query, URL, Method, [], [], Timeout),
-    {Code, RespHeaders, RespBody}.
+    index_rest:get_json(cbas, "analytics/node/stats", get_port(), get_timeout()).

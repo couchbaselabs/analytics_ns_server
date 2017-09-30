@@ -1564,7 +1564,7 @@ do_couchbase_analytics_stats_descriptions(BucketId, AnalyticsNodes) ->
                            {name, per_bucket_cbas_stat("incoming-records-count")},
                            {desc, <<"Records synchronized by Analytics bucket per second">>}]},
                  {struct, [{title, <<"sync failed records">>},
-                           {name, per_bucket_cbas_stat("failed-at-parser-records-count")},
+                           {name, per_bucket_cbas_stat("failed-at-parser-records-count-total")},
                            {desc, <<"Failed to parse records during bucket synchronization">>}]},
                  {struct, [{title, <<"total sync'd records">>},
                            {name, per_bucket_cbas_stat("incoming-records-count-total")},

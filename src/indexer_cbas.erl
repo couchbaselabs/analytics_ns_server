@@ -47,10 +47,10 @@ start_keeper() ->
     index_status_keeper:start_link(?MODULE).
 
 get_gauges() ->
-    ['incoming-records-count', 'incoming-records-count-total', 'failed-at-parser-records-count'].
+    ['incoming-records-count-total','failed-at-parser-records-count-total'].
 
 get_counters() ->
-    [].
+    ['incoming-records-count','failed-at-parser-records-count'].
 
 get_computed() ->
     [].
