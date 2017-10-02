@@ -137,6 +137,27 @@
             Free: {{clusterConfigurationCtl.indexPathTotal}}
           </p>
         </div>
+
+        <div class="formrow">
+        <div class="row">
+          <label for="setup_cbas_path_input">Analytics Disk Paths</label>
+          <small class="text-smaller">Paths cannot be changed after setup</small>
+        </div>
+        <input
+           type="text"
+           autocorrect="off"
+           spellcheck="false"
+           autocapitalize="off"
+           id="setup_cbas_path_input"
+           ng-model="clusterConfigurationCtl.config.cbasPath"
+           ng-change="clusterConfigurationCtl.onCbasPathChange()">
+        <div class="row">
+          <p>
+            Free: {{clusterConfigurationCtl.cbasPathTotal}}
+          </p>
+          <small class="text-smaller">Use comma to separate multiple paths</small>
+        </div>
+      </div>
       </div>
     </div>
     <div class="panel-footer">

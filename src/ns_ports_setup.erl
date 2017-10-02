@@ -664,12 +664,12 @@ cbas_spec(Config) ->
             CBASHttpPort = ns_config:search(Config, {node, node(), cbas_http_port}, 8095),
             CBASCCHttpPort = ns_config:search(Config, {node, node(), cbas_cc_http_port}, 8200),
             CBASAuthPort = ns_config:search(Config, {node, node(), cbas_auth_port}, 8210),
-
             DebugPort = ns_config:search(Config, {node, node(), cbas_debug_port}, -1),
+            {ok, CbasCombinedDirs} = ns_storage_conf:this_node_cbasdir(),
+            Tokens = string:tokens(CbasCombinedDirs, ","),
+            CBASDirs = [filename:join([Token], "@analytics") || Token <- Tokens],
 
-            {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
-            CBASDir = filename:join(IdxDir, "@analytics"),
-            ok = misc:ensure_writable_dir(CBASDir),
+            ok = misc:ensure_writable_dirs(CBASDirs),
             {ok, LogDir} = application:get_env(ns_server, error_logger_mf_dir),
             {_, Host} = misc:node_name_host(node()),
             HttpsOptions = case ns_config:search(Config, {node, node(), cbas_ssl_port}, undefined) of
@@ -688,7 +688,7 @@ cbas_spec(Config) ->
                      "-serverPort=" ++ integer_to_list(NsRestPort),
                      "-bindHttpAddress=" ++ Host,
                      "-bindHttpPort=" ++ integer_to_list(CBASHttpPort),
-                     "-dataDir=" ++ CBASDir,
+                     "-dataDirs=" ++ string:join(CBASDirs, ","),
                      "-cbasExecutable=" ++ CBASCmd,
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),

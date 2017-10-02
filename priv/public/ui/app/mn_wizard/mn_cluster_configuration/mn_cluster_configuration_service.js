@@ -116,6 +116,7 @@
         rv.hostname = selfConfig.hostname;
         rv.dbPath = selfConfig.storage.hdd[0].path;
         rv.indexPath = selfConfig.storage.hdd[0].index_path;
+        rv.cbasPath = selfConfig.storage.hdd[0].cbas_path;
         return rv;
       });
     }

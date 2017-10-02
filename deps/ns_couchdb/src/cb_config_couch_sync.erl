@@ -20,7 +20,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, set_db_and_ix_paths/2, get_db_and_ix_paths/0]).
+-export([start_link/0, set_db_and_ix_paths/3, get_db_and_ix_paths/0]).
 
 %% gen_event callbacks
 -export([init/1, handle_call/3, handle_cast/2,
@@ -38,20 +38,24 @@ init([]) ->
     announce_notable_keys(),
     {ok, #state{}}.
 
--spec get_db_and_ix_paths() -> [{db_path | index_path, string()}].
+-spec get_db_and_ix_paths() -> [{db_path | index_path | cbas_path, string()}].
 get_db_and_ix_paths() ->
     DbPath = couch_config:get("couchdb", "database_dir"),
     IxPath = couch_config:get("couchdb", "view_index_dir", DbPath),
+    CbasPath = couch_config:get("couchdb", "cbas_dirs", DbPath),
     [{db_path, filename:join([DbPath])},
-     {index_path, filename:join([IxPath])}].
+     {index_path, filename:join([IxPath])},
+     {cbas_path, filename:join([CbasPath])}].
 
--spec set_db_and_ix_paths(DbPath :: string(), IxPath :: string()) -> ok.
-set_db_and_ix_paths(DbPath0, IxPath0) ->
+-spec set_db_and_ix_paths(DbPath :: string(), IxPath :: string(), CbasPath :: string()) -> ok.
+set_db_and_ix_paths(DbPath0, IxPath0, CbasPath0) ->
     DbPath = filename:join([DbPath0]),
     IxPath = filename:join([IxPath0]),
+    CbasPath = filename:join([CbasPath0]),
 
     couch_config:set("couchdb", "database_dir", DbPath),
-    couch_config:set("couchdb", "view_index_dir", IxPath).
+    couch_config:set("couchdb", "view_index_dir", IxPath),
+    couch_config:set("couchdb", "cbas_dirs", CbasPath).
 
 terminate(_Reason, _State) ->
     ok.

@@ -2855,6 +2855,7 @@ storage_conf_to_json(S) ->
 
 location_prop_to_json({path, L}) -> {path, list_to_binary(L)};
 location_prop_to_json({index_path, L}) -> {index_path, list_to_binary(L)};
+location_prop_to_json({cbas_path, L}) -> {cbas_path, list_to_binary(L)};
 location_prop_to_json({quotaMb, none}) -> {quotaMb, none};
 location_prop_to_json({state, ok}) -> {state, ok};
 location_prop_to_json(KV) -> KV.
@@ -2882,6 +2883,7 @@ handle_node_settings_post(Node, Req) ->
     {ok, DefaultDbPath} = ns_storage_conf:this_node_dbdir(),
     DbPath = proplists:get_value("path", Params, DefaultDbPath),
     IxPath = proplists:get_value("index_path", Params, DbPath),
+    CbasPath = proplists:get_value("cbas_path", Params, DbPath),
 
     case Node =/= node() of
         true -> exit('Setting the disk storage path for other servers is not yet supported.');
@@ -2917,11 +2919,12 @@ handle_node_settings_post(Node, Req) ->
         end,
 
     Results0 = lists:usort(lists:map(ValidatePath, [{path, DbPath},
-                                                    {index_path, IxPath}])),
+                                                    {index_path, IxPath},
+                                                    {cbas_path, CbasPath}])),
     Results1 =
         case Results0 of
             [ok] ->
-                case ns_storage_conf:setup_disk_storage_conf(DbPath, IxPath) of
+                case ns_storage_conf:setup_disk_storage_conf(DbPath, IxPath, CbasPath) of
                     ok ->
                         ns_audit:disk_storage_conf(Req, Node, DbPath, IxPath),
                         %% NOTE: due to required restart we need to protect

@@ -23,10 +23,11 @@
 -include("ns_common.hrl").
 -include("ns_config.hrl").
 
--export([setup_disk_storage_conf/2,
+-export([setup_disk_storage_conf/3,
          storage_conf/1, storage_conf_from_node_status/1,
          query_storage_conf/0,
-         this_node_dbdir/0, this_node_ixdir/0, this_node_logdir/0,
+         this_node_dbdir/0, this_node_ixdir/0, this_node_cbasdir/0,
+         this_node_logdir/0,
          this_node_bucket_dbdir/1,
          delete_unused_buckets_db_files/0,
          delete_old_2i_indexes/0,
@@ -84,6 +85,10 @@ this_node_bucket_dbdir(BucketName) ->
 this_node_ixdir() ->
     couch_storage_path(index_path).
 
+-spec this_node_cbasdir() -> {ok, string()} | {error, binary()}.
+this_node_cbasdir() ->
+    couch_storage_path(cbas_path).
+
 -spec this_node_logdir() -> {ok, string()} | {error, any()}.
 this_node_logdir() ->
     logdir(ns_config:latest(), node()).
@@ -112,18 +117,23 @@ read_path_from_conf(Config, Node, Key, SubKey) ->
 %% @doc sets db and index path of this node.
 %%
 %% NOTE: ns_server restart is required to make this fully effective.
--spec setup_disk_storage_conf(DbPath::string(), IxDir::string()) -> ok | {errors, [Msg :: binary()]}.
-setup_disk_storage_conf(DbPath, IxPath) ->
-    [{db_path, CurrentDbDir},
-     {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_and_ix_paths()),
+-spec setup_disk_storage_conf(DbPath::string(), IxDir::string(), CbasDir::string()) -> ok | {errors, [Msg :: binary()]}.
+setup_disk_storage_conf(DbPath, IxPath, CbasPath) ->
+    [{cbas_path, CurrentCbasDir},
+      {db_path, CurrentDbDir},
+      {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_and_ix_paths()),
 
     NewDbDir = misc:absname(DbPath),
     NewIxDir = misc:absname(IxPath),
+    NewCbasDir = misc:absname(CbasPath),
 
-    case NewDbDir =/= CurrentDbDir orelse NewIxDir =/= CurrentIxDir of
+    case NewDbDir =/= CurrentDbDir orelse NewIxDir =/= CurrentIxDir orelse NewCbasDir =/= CurrentCbasDir of
         true ->
-            ale:info(?USER_LOGGER, "Setting database directory path to ~s and index directory path to ~s", [NewDbDir, NewIxDir]),
-            case misc:ensure_writable_dirs([NewDbDir, NewIxDir]) of
+            ale:info(?USER_LOGGER, "Setting database directory path to ~s and index directory path to ~s and cbas directory path to ~s", [NewDbDir, NewIxDir, NewCbasDir]),
+            %% cbas may contain multiple comma separates dirs
+            CbasDirs = string:tokens(NewCbasDir, ","),
+            CombinedList = lists:append([NewDbDir, NewIxDir], CbasDirs),
+            case misc:ensure_writable_dirs(CombinedList) of
                 ok ->
                     RV =
                         case NewDbDir =:= CurrentDbDir of
@@ -144,9 +154,10 @@ setup_disk_storage_conf(DbPath, IxPath) ->
 
                     case RV of
                         ok ->
-                            ns_couchdb_api:set_db_and_ix_paths(NewDbDir, NewIxDir),
+                            ns_couchdb_api:set_db_and_ix_paths(NewDbDir, NewIxDir, NewCbasDir),
                             setup_db_and_ix_paths([{db_path, NewDbDir},
-                                                   {index_path, NewIxDir}]);
+                                                   {index_path, NewIxDir},
+                                                   {cbas_path, NewCbasDir}]);
                         _ ->
                             RV
                     end;
@@ -179,13 +190,25 @@ storage_conf(Node) ->
     NodeStatus = ns_doctor:get_node(Node),
     storage_conf_from_node_status(NodeStatus).
 
+
+resolve_paths(Paths) ->
+  lists:map(fun (Path) ->
+        {ok, RealPath} = misc:realpath([Path], "/"),
+        [RealPath] end, Paths).
+
 query_storage_conf() ->
     StorageConf = get_db_and_ix_paths(),
     lists:map(
       fun ({Key, Path}) ->
-              %% db_path and index_path are guaranteed to be absolute
-              {ok, RealPath} = misc:realpath(Path, "/"),
-              {Key, RealPath}
+        case Key =:= cbas_path of
+          %% cbas_path may contain multiple comma separated paths
+          true ->  Paths = string:tokens(Path, ","),
+            {Key, string:join(resolve_paths(Paths), ",")};
+          _ ->
+            %% db_path and index_path are guaranteed to be absolute
+            {ok, RealPath} = misc:realpath([Path], "/"),
+            {Key, RealPath}
+        end
       end, StorageConf).
 
 storage_conf_from_node_status(NodeStatus) ->
@@ -195,6 +218,7 @@ storage_conf_from_node_status(NodeStatus) ->
                   DBDir ->
                       [{path, DBDir},
                        {index_path, proplists:get_value(index_path, StorageConf, DBDir)},
+                       {cbas_path, proplists:get_value(cbas_path, StorageConf, DBDir)},
                        {quotaMb, none},
                        {state, ok}]
               end,
@@ -207,7 +231,10 @@ extract_node_storage_info(NodeInfo) ->
     StorageConf = proplists:get_value(node_storage_conf, NodeInfo, []),
     DiskPaths = [X || {PropName, X} <- StorageConf,
                       PropName =:= db_path orelse PropName =:= index_path],
-    {DiskTotal, DiskUsed} = extract_disk_totals(DiskPaths, DiskStats),
+    CbasCombinedPaths = lists:flatten([X || {PropName, X} <- StorageConf, PropName =:= cbas_path]),
+    CbasPaths = string:tokens(CbasCombinedPaths, ","),
+    AllDiskPaths = lists:append(CbasPaths, DiskPaths),
+    {DiskTotal, DiskUsed} = extract_disk_totals(AllDiskPaths, DiskStats),
     [{ram, [{total, RAMTotal},
             {used, RAMUsed}
            ]},
