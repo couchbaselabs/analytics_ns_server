@@ -120,8 +120,8 @@ read_path_from_conf(Config, Node, Key, SubKey) ->
 -spec setup_disk_storage_conf(DbPath::string(), IxDir::string(), CbasDir::string()) -> ok | {errors, [Msg :: binary()]}.
 setup_disk_storage_conf(DbPath, IxPath, CbasPath) ->
     [{cbas_path, CurrentCbasDir},
-      {db_path, CurrentDbDir},
-      {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_and_ix_paths()),
+     {db_path, CurrentDbDir},
+     {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_and_ix_paths()),
 
     NewDbDir = misc:absname(DbPath),
     NewIxDir = misc:absname(IxPath),
