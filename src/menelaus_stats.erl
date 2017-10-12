@@ -1566,9 +1566,9 @@ do_couchbase_analytics_stats_descriptions(BucketId, AnalyticsNodes) ->
                  {struct, [{title, <<"sync failed records">>},
                            {name, per_bucket_cbas_stat("failed-at-parser-records-count-total")},
                            {desc, <<"Failed to parse records during bucket synchronization">>}]},
-                 {struct, [{title, <<"total sync'd records">>},
+                 {struct, [{title, <<"total sync'd records since bucket connect">>},
                            {name, per_bucket_cbas_stat("incoming-records-count-total")},
-                           {desc, <<"Records synchronized by Analytics bucket">>}]}
+                           {desc, <<"Records synchronized by Analytics since bucket was last connected">>}]}
                 ]}]}].
 
 couchbase_fts_stats_descriptions(_, []) ->
@@ -2278,22 +2278,22 @@ server_resources_stats_description(IndexNodes, FtsNodes, CbasNodes) ->
                           {title,<<"analytics heap used">>},
                           {desc,<<"Amount of JVM heap used by Analytics on this server">>}]},
                  {struct, [{name, <<"cbas_system-load-average">>},
-                           {title, <<"system load">>},
+                           {title, <<"analytics system load">>},
                            {desc, <<"System load for Analytics node">>}]},
                  {struct, [{name, <<"cbas_thread-count">>},
-                           {title, <<"thread count">>},
+                           {title, <<"analytics thread count">>},
                            {desc, <<"Number of threads for Analytics node">>}]},
                  {struct, [{name, <<"cbas_gc-count">>},
-                           {title, <<"gc count/sec">>},
+                           {title, <<"analytics gc count/sec">>},
                            {desc, <<"Number of JVM garbage collections for Analytics node">>}]},
                  {struct, [{name, <<"cbas_gc-time">>},
-                           {title, <<"gc time (ms.)/sec">>},
+                           {title, <<"analytics gc time (ms.)/sec">>},
                            {desc, <<"The amount of time in milliseconds spent performing JVM garbage collections for Analytics node">>}]},
                  {struct, [{name, <<"cbas_io-reads">>},
-                           {title, <<"bytes read/sec">>},
+                           {title, <<"analytics bytes read/sec">>},
                            {desc, <<"Number of disk bytes read on Analytics node per second">>}]},
                  {struct, [{name, <<"cbas_io-writes">>},
-                           {title, <<"bytes written/sec">>},
+                           {title, <<"analytics bytes written/sec">>},
                            {desc, <<"Number of disk bytes written on Analytics node per second">>}]}
                  | MaybeFts]
         end,
