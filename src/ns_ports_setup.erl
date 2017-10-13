@@ -668,7 +668,8 @@ cbas_spec(Config) ->
             {ok, CbasCombinedDirs} = ns_storage_conf:this_node_cbasdir(),
             Tokens = string:tokens(CbasCombinedDirs, ","),
             CBASDirs = [filename:join([Token], "@analytics") || Token <- Tokens],
-
+            {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
+            CBASDP3CompatDir = filename:join(IdxDir, "@analytics"),
             ok = misc:ensure_writable_dirs(CBASDirs),
             {ok, LogDir} = application:get_env(ns_server, error_logger_mf_dir),
             {_, Host} = misc:node_name_host(node()),
@@ -689,6 +690,7 @@ cbas_spec(Config) ->
                      "-bindHttpAddress=" ++ Host,
                      "-bindHttpPort=" ++ integer_to_list(CBASHttpPort),
                      "-dataDirs=" ++ string:join(CBASDirs, ","),
+                     "-dataDirDP3Compat=" ++ CBASDP3CompatDir,
                      "-cbasExecutable=" ++ CBASCmd,
                      "-debugPort=" ++ integer_to_list(DebugPort),
                      "-ccHttpPort=" ++ integer_to_list(CBASCCHttpPort),
