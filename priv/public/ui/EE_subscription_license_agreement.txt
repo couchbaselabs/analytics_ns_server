@@ -4,9 +4,9 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
 
 1. License Grant. During the Subscription Term, and subject to Licensee’s compliance with the terms and conditions of this Agreement, Couchbase Inc. hereby grants to Licensee a perpetual, non-exclusive, non-transferable, non-sublicensable, royalty-free, limited license to install and use the Software only for Licensee’s own internal non-production use for the purpose of evaluation and/or development on an unlimited number of Licensed Servers.
 
-1.A Unique Terms for this Particular Software. a. For each the third party software components (“TPC”) included within the Software, the license terms applicable to such TPC shall apply, and not the license expressed in this Agreement. b. Couchbase may terminate the license stated in Section 1 if the owner of a TPC terminate Couchbase’s license for such TPC. c. The duration of the license stated in Section 1 is ninety (90) days.
+1.A Unique Terms for this Particular Software. a. For each of the third party software components (“TPC”) included within the Software, the license terms applicable to such TPC shall apply, and not the license expressed in this Agreement. b. Couchbase may terminate the license stated in Section 1 if the owner of a TPC terminate Couchbase’s license for such TPC. c. The duration of the license stated in Section 1 is ninety (90) days.
 
-2. Restrictions. Licensee will not: (a) copy or use the Software in any manner except as expressly permitted in this Agreement; (b) use or deploy the Software on any server in excess of the Licensed Servers for which Licensee has paid the applicable Subscription Fee unless it is covered by a valid license; (c) transfer, sell, rent, lease, lend, distribute, or sublicense the Software to any third party; (d) use the Software for providing time-sharing services, service bureau services or as part of an application services provider or as a service offering primarily designed to offer the functionality of the Software; (e) reverse engineer, disassemble, or decompile the Software (except to the extent such restrictions are prohibited by law); (f) alter, modify, enhance or prepare any derivative work from or of the Software; (g) alter or remove any proprietary notices in the Software; (h) make available to any third party the functionality of the Software or any license keys used in connection with the Software; (i) publically display or communicate the results of internal performance testing or other benchmarking or performance evaluation of the Software; or (j) export the Software in violation of U.S. Department of Commerce export administration rules or any other export laws or regulations. If Licensee does not comply with the license terms or the foregoing restrictions, Couchbase Inc. may terminate or suspend Licensee’s account and access to the Software until Licensee comes into compliance with such terms and restrictions.
+2. Restrictions. Licensee will not: (a) copy or use the Software in any manner except as expressly permitted in this Agreement; (b) use or deploy the Software on any server in excess of the Licensed Servers for which Licensee has paid the applicable Subscription Fee unless it is covered by a valid license; (c) transfer, sell, rent, lease, lend, distribute, or sublicense the Software to any third party; (d) use the Software for providing time-sharing services, service bureau services or as part of an application services provider or as a service offering primarily designed to offer the functionality of the Software; (e) reverse engineer, disassemble, or decompile the Software (except to the extent such restrictions are prohibited by law); (f) alter, modify, enhance or prepare any derivative work from or of the Software; (g) alter or remove any proprietary notices in the Software; (h) make available to any third party the functionality of the Software or any license keys used in connection with the Software; (i) publicly display or communicate the results of internal performance testing or other benchmarking or performance evaluation of the Software; or (j) export the Software in violation of U.S. Department of Commerce export administration rules or any other export laws or regulations. If Licensee does not comply with the license terms or the foregoing restrictions, Couchbase Inc. may terminate or suspend Licensee’s account and access to the Software until Licensee comes into compliance with such terms and restrictions.
 
 3. Proprietary Rights. The Software, and any modifications or derivatives thereto, is and shall remain the sole property of Couchbase Inc. and its licensors, and, except for the license rights granted herein, Couchbase Inc. and its licensors retain all right, title and interest in and to the Software, including all intellectual property rights therein and thereto. The Software may include third party open source software components. If Licensee is the United States Government or any contractor thereof, all licenses granted hereunder are subject to the following: (a) for acquisition by or on behalf of civil agencies, as necessary to obtain protection as “commercial computer software” and related documentation in accordance with the terms of this Agreement and as specified in Subpart 12.1212 of the Federal Acquisition Regulation (FAR), 48 C.F.R.12.1212, and its successors; and (b) for acquisition by or on behalf of the Department of Defense (DOD) and any agencies or units thereof, as necessary to obtain protection as “commercial computer software” and related documentation in accordance with the terms of this Agreement and as specified in Subparts 227.7202-1 and 227.7202-3 of the DOD FAR Supplement, 48 C.F.R.227.7202-1 and 227.7202-3, and its successors. Manufacturer is Couchbase, Inc.
 
@@ -27,7 +27,7 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
 If you have any questions regarding this Agreement, please contact us at sales@couchbase.com.
 
 ***
-*** 3rd Party Licenses for Couchbase Analytics Developer Preview 3
+*** 3rd Party Licenses for Couchbase Analytics Developer Preview 4
 ***
 
 
@@ -892,7 +892,7 @@ If you have any questions regarding this Agreement, please contact us at sales@c
 
 
 * rxjava
-   (io.reactivex:rxjava:1.2.7 - https://github.com/ReactiveX/RxJava)
+   (io.reactivex:rxjava:1.3.0 - https://github.com/ReactiveX/RxJava)
 
 
                                     Apache License
@@ -1654,11 +1654,11 @@ If you have any questions regarding this Agreement, please contact us at sales@c
       http://www.apache.org/licenses/LICENSE-2.0
 ---
 ***
-*** Required NOTICE(s) for Couchbase Analytics Developer Preview 3
+*** Required NOTICE(s) for Couchbase Analytics Developer Preview 4
 ***
 
 
-   Couchbase Analytics Developer Preview 3 utilizes many libraries and source code, which come with the following applicable NOTICE(s):
+   Couchbase Analytics Developer Preview 4 utilizes many libraries and source code, which come with the following applicable NOTICE(s):
 
 * jackson-databind
    (com.fasterxml.jackson.core:jackson-databind:2.8.4 - https://github.com/FasterXML/jackson-core)
