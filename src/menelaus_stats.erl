@@ -1560,15 +1560,15 @@ do_couchbase_analytics_stats_descriptions(BucketId, AnalyticsNodes) ->
     [{struct, [{blockName, list_to_binary(BlockName)},
                {extraCSSClasses, <<"dynamic_closed">>},
                {stats,
-                [{struct, [{title, <<"sync'd records/sec.">>},
+                [{struct, [{title, <<"ops/sec.">>},
                            {name, per_bucket_cbas_stat("incoming-records-count")},
-                           {desc, <<"Records synchronized by Analytics bucket per second">>}]},
+                           {desc, <<"Operations (gets + sets + deletes) per second processed by Analytics for this bucket">>}]},
                  {struct, [{title, <<"sync failed records">>},
                            {name, per_bucket_cbas_stat("failed-at-parser-records-count-total")},
                            {desc, <<"Failed to parse records during bucket synchronization">>}]},
-                 {struct, [{title, <<"total sync'd records since bucket connect">>},
+                 {struct, [{title, <<"total ops since bucket connect">>},
                            {name, per_bucket_cbas_stat("incoming-records-count-total")},
-                           {desc, <<"Records synchronized by Analytics since bucket was last connected">>}]}
+                           {desc, <<"Operations (gets + sets + deletes) processed by Analytics for this bucket since last connected">>}]}
                 ]}]}].
 
 couchbase_fts_stats_descriptions(_, []) ->
