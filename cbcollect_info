@@ -783,7 +783,7 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                                     log_file="fts_diag.json", no_header=True)]
 
     cbas_tasks = []
-    cbas_port = read_guts(guts, "cbas_http_port")
+    cbas_port = read_guts(guts, "cbas_admin_port")
     if cbas_port:
         url='http://127.0.0.1:%s/analytics/node/diagnostics' % cbas_port
         cbas_tasks = [make_curl_task(name="CBAS /analytics/node/diagnostics: ",

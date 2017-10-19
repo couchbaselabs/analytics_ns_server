@@ -216,35 +216,38 @@ default() ->
      {{node, node(), cbas_http_port},
       misc:get_env_default(cbas_http_port, 8095)},
 
+     {{node, node(), cbas_admin_port},
+      misc:get_env_default(cbas_admin_port, 9110)},
+
      {{node, node(), cbas_cc_http_port},
-      misc:get_env_default(cbas_cc_http_port, 8200)},
+      misc:get_env_default(cbas_cc_http_port, 9111)},
 
      {{node, node(), cbas_cc_cluster_port},
-      misc:get_env_default(cbas_cc_cluster_port, 8201)},
+      misc:get_env_default(cbas_cc_cluster_port, 9112)},
 
      {{node, node(), cbas_cc_client_port},
-      misc:get_env_default(cbas_cc_client_port, 8202)},
+      misc:get_env_default(cbas_cc_client_port, 9113)},
 
      {{node, node(), cbas_hyracks_console_port},
-      misc:get_env_default(cbas_hyracks_console_port, 8203)},
+      misc:get_env_default(cbas_hyracks_console_port, 9114)},
 
      {{node, node(), cbas_cluster_port},
-      misc:get_env_default(cbas_cluster_port, 8204)},
+      misc:get_env_default(cbas_cluster_port, 9115)},
 
      {{node, node(), cbas_data_port},
-      misc:get_env_default(cbas_data_port, 8205)},
+      misc:get_env_default(cbas_data_port, 9116)},
 
      {{node, node(), cbas_result_port},
-      misc:get_env_default(cbas_result_port, 8206)},
+      misc:get_env_default(cbas_result_port, 9117)},
 
      {{node, node(), cbas_messaging_port},
-      misc:get_env_default(cbas_messaging_port, 8207)},
+      misc:get_env_default(cbas_messaging_port, 9118)},
 
      {{node, node(), cbas_debug_port},
       misc:get_env_default(cbas_debug_port, -1)},
 
      {{node, node(), cbas_auth_port},
-      misc:get_env_default(cbas_auth_port, 8210)},
+      misc:get_env_default(cbas_auth_port, 9119)},
 
      {{node, node(), cbas_ssl_port},
       case IsEnterprise of

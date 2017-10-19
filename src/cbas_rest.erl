@@ -31,7 +31,7 @@ get_stats() ->
     end.
 
 get_port() ->
-    ns_config:read_key_fast({node, node(), cbas_http_port}, 8905).
+    ns_config:read_key_fast({node, node(), cbas_admin_port}, 9110).
 
 get_timeout() ->
     30000.
