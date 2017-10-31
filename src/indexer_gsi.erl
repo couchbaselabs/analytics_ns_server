@@ -23,7 +23,7 @@
          get_gauges/0, get_counters/0, get_computed/0, grab_stats/0, prefix/0,
          per_index_stat/2, global_index_stat/1, compute_gauges/1,
          get_service_stats/0, service_stat_prefix/0, service_event_name/0,
-         compute_service_stats/1]).
+         compute_service_stats/1, get_service_counters/0]).
 
 get_status(Timeout) ->
     index_status_keeper:get_status(?MODULE, Timeout).
@@ -80,6 +80,9 @@ get_counters() ->
 
 get_service_stats() ->
     [memory_quota, memory_used].
+
+get_service_counters() ->
+    [].
 
 get_computed() ->
     [disk_overhead_estimate].
