@@ -869,10 +869,6 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
    (io.netty:netty-all:4.1.6.Final - http://netty.io/netty-all/)
 
 
-* Plexus Common Utilities
-   (org.codehaus.plexus:plexus-utils:3.0.24 - http://codehaus-plexus.github.io/plexus-utils/)
-
-
 * StAX API
    (stax:stax-api:1.0.1 - http://stax.codehaus.org/)
 
@@ -1494,44 +1490,6 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
           communication from You. This License may not be modified without the mutual
           written agreement of the Licensor and You.
 ---
-* stax-utils
-   (net.java.dev.stax-utils:stax-utils:20060502 - http://stax-utils.dev.java.net/)
-
-
-      Copyright (c) 2004, Christian Niles, unit12.net
-      Copyright (c) 2004, Sun Microsystems, Inc.
-      Copyright (c) 2006, John Kristian
-      All rights reserved.
-
-      Redistribution and use in source and binary forms, with or without
-      modification, are permitted provided that the following conditions are
-      met:
-
-          * Redistributions of source code must retain the above copyright
-            notice, this list of conditions and the following disclaimer.
-
-          * Redistributions in binary form must reproduce the above
-            copyright notice, this list of conditions and the following
-            disclaimer in the documentation and/or other materials provided
-            with the distribution.
-
-          * Neither the name of the listed copyright holders nor the names
-            of its contributors may be used to endorse or promote products
-            derived from this software without specific prior written
-            permission.
-
-      THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-      "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-      LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-      A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-      OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-      SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-      LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-      DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-      THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-      (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-      OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
----
 * SLF4J API Module
    (org.slf4j:slf4j-api:1.7.21 - http://www.slf4j.org/slf4j-api)
 
@@ -1566,36 +1524,6 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
 
       Permission is hereby granted, free of charge, to any person obtaining a copy of
       this software and associated documentation files (the "Software"), to deal in
-      the Software without restriction, including without limitation the rights to
-      use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-      of the Software, and to permit persons to whom the Software is furnished to do
-      so, subject to the following conditions:
-
-      The above copyright notice and this permission notice shall be included in all
-      copies or substantial portions of the Software.
-
-      THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-      IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-      FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-      AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-      LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-      OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-      SOFTWARE.
----
-* Appassembler :: Generic Bootstrapper
-   (org.codehaus.mojo.appassembler:appassembler-booter:2.0.0 - http://www.mojohaus.org/appassembler-booter/appassembler/appassembler-booter)
-
-
-* Appassembler :: Model
-   (org.codehaus.mojo.appassembler:appassembler-model:2.0.0 - http://www.mojohaus.org/appassembler-model/appassembler/appassembler-model)
-
-
-      The MIT License
-
-      Copyright 2006-2012 The Codehaus.
-
-      Permission is hereby granted, free of charge, to any person obtaining a copy of
-      this software and associated documentation files \(the "Software"\), to deal in
       the Software without restriction, including without limitation the rights to
       use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
       of the Software, and to permit persons to whom the Software is furnished to do
@@ -1894,26 +1822,6 @@ IMPORTANT-READ CAREFULLY: BY INSTALLING, DOWNLOADING OR OTHERWISE USING THIS SOF
 
       This product includes software developed at
       The Apache Software Foundation (http://www.apache.org/).
----
-
-* Plexus Common Utilities
-   (org.codehaus.plexus:plexus-utils:3.0.24 - https://github.com/FasterXML/jackson-core)
-
-
-            This product includes software developed by the Indiana University
-        Extreme! Lab (http://www.extreme.indiana.edu/).
-
-      This product includes software developed by
-      The Apache Software Foundation (http://www.apache.org/).
-
-      This product includes software developed by
-      ThoughtWorks (http://www.thoughtworks.com).
-
-      This product includes software developed by
-      javolution (http://javolution.org/).
-
-      This product includes software developed by
-      Rome (https://rome.dev.java.net/).
 ---
 
 * Apache AsterixDB
