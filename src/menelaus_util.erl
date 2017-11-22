@@ -48,6 +48,7 @@
          concat_url_path/2,
          bin_concat_path/1,
          bin_concat_path/2,
+         parse_validate_boolean_field/3,
          parse_validate_number/3,
          parse_validate_number/4,
          parse_validate_port_number/1,
@@ -78,10 +79,19 @@
          reply_global_error/2,
          reply_error/3,
          require_auth/1,
-         send_chunked/3]).
+         send_chunked/3,
+         handle_streaming/2,
+         assert_is_enterprise/0,
+         assert_is_40/0,
+         assert_is_45/0,
+         assert_is_50/0,
+         assert_is_vulcan/0]).
 
 %% used by parse_validate_number
 -export([list_to_integer/1, list_to_float/1]).
+
+%% for hibernate
+-export([handle_streaming_wakeup/4]).
 
 %% External API
 
@@ -319,6 +329,14 @@ bin_concat_path(Segments) ->
 bin_concat_path(Segments, Props) ->
     iolist_to_binary(url_path_iolist(Segments, Props)).
 
+parse_validate_boolean_field(JSONName, CfgName, Params) ->
+    case proplists:get_value(JSONName, Params) of
+        undefined -> [];
+        "true" -> [{ok, CfgName, true}];
+        "false" -> [{ok, CfgName, false}];
+        _ -> [{error, JSONName, iolist_to_binary(io_lib:format("~s is invalid", [JSONName]))}]
+    end.
+
 -spec parse_validate_number(string(), (integer() | undefined), (integer() | undefined)) ->
                                    invalid | too_small | too_large | {ok, integer()}.
 parse_validate_number(String, Min, Max) ->
@@ -377,12 +395,12 @@ local_addr(Req) ->
                       {ok, {AV, _Port}} = inet:sockname(Socket),
                       AV
               end,
-    string:join(lists:map(fun integer_to_list/1, tuple_to_list(Address)), ".").
+    misc:maybe_add_brackets(inet:ntoa(Address)).
 
 remote_addr_and_port(Req) ->
     case inet:peername(Req:get(socket)) of
         {ok, {Address, Port}} ->
-            string:join(lists:map(fun integer_to_list/1, tuple_to_list(Address)), ".") ++ ":" ++ integer_to_list(Port);
+            misc:maybe_add_brackets(inet:ntoa(Address)) ++ ":" ++ integer_to_list(Port);
         Error ->
             ?log_error("remote_addr failed: ~p", Error),
             "unknown"
@@ -476,8 +494,8 @@ validate_boolean(Name, {OutList, _, _} = State) ->
             return_error(Name, "The value must be true or false", State)
     end.
 
-validate_dir(Name, {OutList, _, _} = State) ->
-    Value = proplists:get_value(atom_to_list(Name), OutList),
+validate_dir(Name, {_, InList, _} = State) ->
+    Value = proplists:get_value(Name, InList),
     case Value of
         undefined ->
             State;
@@ -585,6 +603,8 @@ ensure_local(Req) ->
     case Req:get(peer) of
         "127.0.0.1" ->
             ok;
+        "::1" ->
+            ok;
         _ ->
             erlang:throw({web_exception, 400, <<"API is accessible from localhost only">>, []})
     end.
@@ -619,6 +639,91 @@ send_chunked(Req, StatusCode, ExtraHeaders) ->
                          end),
            Resp:write_chunk(<<>>)
        end).
+
+handle_streaming(F, Req) ->
+    HTTPRes = reply_ok(Req, "application/json; charset=utf-8", chunked),
+    %% Register to get config state change messages.
+    menelaus_event:register_watcher(self()),
+    Sock = Req:get(socket),
+    mochiweb_socket:setopts(Sock, [{active, true}]),
+    handle_streaming(F, Req, HTTPRes, undefined).
+
+streaming_inner(F, HTTPRes, LastRes) ->
+    Res = F(normal, stable),
+    case Res =:= LastRes of
+        true ->
+            ok;
+        false ->
+            ResNormal = case Res of
+                            {just_write, Stuff} ->
+                                Stuff;
+                            _ ->
+                                F(normal, unstable)
+                        end,
+            Encoded = case ResNormal of
+                          {write, Bin} -> Bin;
+                          _ -> encode_json(ResNormal)
+                      end,
+            HTTPRes:write_chunk(Encoded),
+            HTTPRes:write_chunk("\n\n\n\n")
+    end,
+    Res.
+
+handle_streaming(F, Req, HTTPRes, LastRes) ->
+    Res =
+        try streaming_inner(F, HTTPRes, LastRes)
+        catch exit:normal ->
+                HTTPRes:write_chunk(""),
+                exit(normal)
+        end,
+    request_throttler:hibernate(?MODULE, handle_streaming_wakeup, [F, Req, HTTPRes, Res]).
+
+handle_streaming_wakeup(F, Req, HTTPRes, Res) ->
+    receive
+        notify_watcher ->
+            timer:sleep(50),
+            misc:flush(notify_watcher),
+            ok;
+        _ ->
+            exit(normal)
+    after 25000 ->
+            ok
+    end,
+    handle_streaming(F, Req, HTTPRes, Res).
+
+assert_is_enterprise() ->
+    case cluster_compat_mode:is_enterprise() of
+        true ->
+            ok;
+        _ ->
+            erlang:throw({web_exception,
+                          400,
+                          "This http API endpoint requires enterprise edition",
+                          [{"X-enterprise-edition-needed", 1}]})
+    end.
+
+assert_is_40() ->
+    assert_cluster_version(fun cluster_compat_mode:is_cluster_40/0).
+
+assert_is_45() ->
+    assert_cluster_version(fun cluster_compat_mode:is_cluster_45/0).
+
+assert_is_50() ->
+    assert_cluster_version(fun cluster_compat_mode:is_cluster_50/0).
+
+assert_is_vulcan() ->
+    assert_cluster_version(fun cluster_compat_mode:is_cluster_vulcan/0).
+
+assert_cluster_version(Fun) ->
+    case Fun() of
+        true ->
+            ok;
+        false ->
+            erlang:throw({web_exception,
+                          400,
+                          "This http API endpoint isn't supported in mixed version clusters",
+                          []})
+    end.
 
 -ifdef(EUNIT).
 

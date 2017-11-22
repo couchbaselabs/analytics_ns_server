@@ -1348,23 +1348,121 @@ try_with_maybe_ignorant_after(TryBody, AfterBody) ->
 letrec(Args, F) ->
     erlang:apply(F, [F | Args]).
 
+-spec is_ipv6() -> true | false.
+is_ipv6() ->
+    get_env_default(ns_server, ipv6, false).
+
+-spec get_net_family() -> inet:address_family().
+get_net_family() ->
+    case is_ipv6() of
+        true ->
+            inet6;
+        false ->
+            inet
+    end.
+
+-spec get_proto_dist_type() -> string().
+get_proto_dist_type() ->
+    case is_ipv6() of
+        true ->
+            "inet6_tcp";
+        false ->
+            "inet_tcp"
+    end.
+
+-spec localhost() -> string().
+localhost() ->
+    localhost([]).
+
+-spec localhost([] | [url]) -> string().
+localhost(Options) ->
+    case is_ipv6() of
+        true ->
+            case Options of
+                [] ->
+                    "::1";
+                [url] ->
+                    "[::1]"
+            end;
+        false ->
+            "127.0.0.1"
+    end.
+
+-spec inaddr_any() -> string().
+inaddr_any() ->
+    inaddr_any([]).
+
+-spec inaddr_any([] | [url]) -> string().
+inaddr_any(Options) ->
+    case is_ipv6() of
+        true ->
+            case Options of
+                [] ->
+                    "::";
+                [url] ->
+                    "[::]"
+            end;
+        false ->
+            "0.0.0.0"
+    end.
+
+-spec local_url(integer(),
+                [] | [no_scheme |
+                      {user_info, {string(), string()}}]) -> string().
+local_url(Port, Options) ->
+    local_url(Port, "", Options).
+
+-spec local_url(integer(), string(),
+                [] | [no_scheme |
+                      {user_info, {string(), string()}}]) -> string().
+local_url(Port, [H | _] = Path, Options) when H =/= $/ ->
+    local_url(Port, "/" ++ Path, Options);
+local_url(Port, Path, Options) ->
+    Scheme = case lists:member(no_scheme, Options) of
+                 true -> "";
+                 false -> "http://"
+             end,
+    User = case lists:keysearch(user_info, 1, Options) of
+               false -> "";
+               {value, {_, {U, P}}} -> U ++ ":" ++ P ++ "@"
+           end,
+    Scheme ++ User ++ localhost([url]) ++ ":" ++ integer_to_list(Port) ++ Path.
+
 -spec is_good_address(string()) -> ok | {cannot_resolve, inet:posix()}
                                        | {cannot_listen, inet:posix()}
                                        | {address_not_allowed, string()}.
 is_good_address(Address) ->
-    case string:tokens(Address, ".") of
-        [_] ->
-            {address_not_allowed, "short names are not allowed. Couchbase Server requires at least one dot in a name"};
+    is_good_address(Address, is_ipv6()).
+
+is_good_address(Address, false) ->
+    check_short_name(Address, ".");
+is_good_address(Address, true) ->
+    case inet:getaddr(Address, inet) of
+        {ok, _} ->
+            Msg = io_lib:format("~s seems to be an IPv4 address or a name that resolves to "
+                                "an IPv4 address. Please use an IPv6 address or a Fully Qualified "
+                                "Domain Name mapped to an IPv6 address.", [Address]),
+            {address_not_allowed, Msg};
+        _ ->
+            check_short_name(Address, ".:")
+    end.
+
+check_short_name(Address, Separators) ->
+    case lists:subtract(Address, Separators) of
+        Address ->
+            {address_not_allowed,
+             "Short names are not allowed. Please use a Fully Qualified Domain Name."};
         _ ->
             is_good_address_when_allowed(Address)
     end.
 
 is_good_address_when_allowed(Address) ->
-    case inet:getaddr(Address, inet) of
+    NetFamily = get_net_family(),
+    case inet:getaddr(Address, NetFamily) of
         {error, Errno} ->
             {cannot_resolve, Errno};
         {ok, IpAddr} ->
-            case gen_udp:open(0, [inet, {ip, IpAddr}]) of
+            case gen_udp:open(0, [NetFamily, {ip, IpAddr}]) of
                 {error, Errno} ->
                     {cannot_listen, Errno};
                 {ok, Socket} ->
@@ -1915,8 +2013,58 @@ fact(0) ->
 fact(N) ->
     N * fact(N-1).
 
+-spec item_count(list(), term()) -> non_neg_integer().
+item_count(List, Item) ->
+    lists:foldl(
+      fun(Ele, Acc) ->
+              if Ele =:= Item -> Acc + 1;
+                 true -> Acc
+              end
+      end, 0, List).
+
 compress(Term) ->
     zlib:compress(term_to_binary(Term)).
 
 decompress(Blob) ->
     binary_to_term(zlib:uncompress(Blob)).
+
+-spec split_host_port(list(), list()) -> tuple().
+split_host_port(HostPort, DefaultPort) ->
+    split_host_port(HostPort, DefaultPort, is_ipv6()).
+
+-spec split_host_port(list(), list(), boolean()) -> tuple().
+split_host_port("[" ++ Rest, DefaultPort, true) ->
+    case string:tokens(Rest, "]") of
+        [Host] ->
+            {Host, DefaultPort};
+        [Host, ":" ++ Port] when Port =/= [] ->
+            {Host, Port};
+        _ ->
+            throw({error, [<<"The hostname is malformed.">>]})
+    end;
+split_host_port("[" ++ _Rest, _DefaultPort, false) ->
+    throw({error, [<<"The hostname is malformed.">>]});
+split_host_port(HostPort, DefaultPort, _) ->
+    case item_count(HostPort, $:) > 1 of
+        true ->
+            throw({error, [<<"The hostname is malformed. If using an IPv6 address, "
+                             "please enclose the address within '[' and ']'">>]});
+        false ->
+            case string:tokens(HostPort, ":") of
+                [Host] ->
+                    {Host, DefaultPort};
+                [Host, Port] ->
+                    {Host, Port};
+                _ ->
+                    throw({error, [<<"The hostname is malformed.">>]})
+            end
+    end.
+
+-spec maybe_add_brackets(list()) -> list().
+maybe_add_brackets("[" ++ _Rest = Address) ->
+    Address;
+maybe_add_brackets(Address) ->
+    case lists:member($:, Address) of
+        true -> "[" ++ Address ++ "]";
+        false -> Address
+    end.

@@ -393,15 +393,16 @@ alert_key(_) -> all.
 
 check_host_connectivity(OtherHost) ->
     %% connect to epmd at other side
-    ConnRV = (catch gen_tcp:connect(OtherHost, 4369, [binary, {packet, 0}, {active, false}], 5000)),
+    ConnRV = (catch gen_tcp:connect(OtherHost, 4369, [misc:get_net_family(),
+                                                      binary,
+                                                      {packet, 0},
+                                                      {active, false}], 5000)),
     case ConnRV of
         {ok, Socket} ->
             %% and determine our ip address
             {ok, {IpAddr, _}} = inet:sockname(Socket),
             inet:close(Socket),
-            RV = string:join(lists:map(fun erlang:integer_to_list/1,
-                                       tuple_to_list(IpAddr)), "."),
-            {ok, RV};
+            {ok, inet:ntoa(IpAddr)};
         _ ->
             Reason =
                 case ConnRV of
@@ -530,7 +531,8 @@ do_add_node_allowed(RemoteAddr, RestPort, Auth, GroupUUID, Services) ->
     end.
 
 do_add_node_with_connectivity(RemoteAddr, RestPort, Auth, GroupUUID, Services) ->
-    {struct, NodeInfo} = menelaus_web:build_full_node_info(node(), "127.0.0.1"),
+    {struct, NodeInfo} = menelaus_web_node:build_full_node_info(node(),
+                                                                misc:localhost()),
     Props = [{<<"requestedTargetNodeHostname">>, list_to_binary(RemoteAddr)},
              {<<"requestedServices">>, Services}]
         ++ NodeInfo,
@@ -546,8 +548,8 @@ do_add_node_with_connectivity(RemoteAddr, RestPort, Auth, GroupUUID, Services) -
     ?cluster_debug("Posting node info to engage_cluster on ~p:~n~p",
                    [{RemoteAddr, RestPort}, {sanitize_node_info(Props1)}]),
     RV = menelaus_rest:json_request_hilevel(post,
-                                            {RemoteAddr, RestPort, "/engageCluster2",
-                                             "application/json",
+                                            {misc:maybe_add_brackets(RemoteAddr), RestPort,
+                                             "/engageCluster2", "application/json",
                                              mochijson2:encode({Props1})},
                                             Auth),
     ?cluster_debug("Reply from engage_cluster on ~p:~n~p",
@@ -611,7 +613,12 @@ expect_integer(PropName, Value) ->
     end.
 
 call_port_please(Name, Host) ->
-    case erl_epmd:port_please(Name, Host, 5000) of
+    %% When the 'Host' parameter is the actual hostname the epmd:port_please API
+    %% implementation uses "inet" protocol by default. This will fail if the
+    %% host is configured with IPv6. But if we pass in the IP Address instead of
+    %% hostname the API does the right thing. Hence passing the IP Address.
+    {ok, IpAddr} = inet:getaddr(Host, misc:get_net_family()),
+    case erl_epmd:port_please(Name, IpAddr, 5000) of
         {port, Port, _Version} -> Port;
         X -> X
     end.
@@ -627,7 +634,8 @@ verify_otp_connectivity(OtpNode) ->
              {connect_node, OtpNode, Port}};
         true ->
             case gen_tcp:connect(Host, Port,
-                                 [binary, {packet, 0}, {active, false}],
+                                 [misc:get_net_family(), binary,
+                                  {packet, 0}, {active, false}],
                                  5000) of
                 {ok, Socket} ->
                     inet:close(Socket),
@@ -681,19 +689,17 @@ check_can_add_node(NodeKVList) ->
 
 do_add_node_engaged_inner(NodeKVList, OtpNode, Auth, Services) ->
     HostnameRaw = expect_json_property_list(<<"hostname">>, NodeKVList),
-    [Hostname, Port] = case string:tokens(HostnameRaw, ":") of
-                           [_, _] = Pair -> Pair;
-                           [H] -> [H, "8091"];
-                           _ -> erlang:exit({unexpected_json, malformed_hostname, HostnameRaw})
-                       end,
+    {Hostname0, Port} = misc:split_host_port(HostnameRaw, "8091"),
 
-    {struct, MyNodeKVList} = menelaus_web:build_full_node_info(node(), "127.0.0.1"),
+    {struct, MyNodeKVList} = menelaus_web_node:build_full_node_info(node(),
+                                                                    misc:localhost()),
     Struct = {struct, [{<<"targetNode">>, OtpNode},
                        {<<"requestedServices">>, Services}
                        | MyNodeKVList]},
 
     ?cluster_debug("Posting the following to complete_join on ~p:~n~p",
                    [HostnameRaw, sanitize_node_info(Struct)]),
+    Hostname = misc:maybe_add_brackets(Hostname0),
     RV = menelaus_rest:json_request_hilevel(post,
                                             {Hostname, Port, "/completeJoin",
                                              "application/json",

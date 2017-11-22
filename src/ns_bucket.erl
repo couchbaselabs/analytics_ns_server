@@ -85,7 +85,7 @@
          can_have_views/1,
          bucket_view_nodes/1,
          bucket_config_view_nodes/1,
-         config_upgrade_to_spock/1]).
+         config_upgrade_to_50/1]).
 
 
 %%%===================================================================
@@ -549,9 +549,10 @@ json_map_with_full_config(LocalAddr, BucketConfig, Config) ->
                                                           memcached, port),
                         Host = case misc:node_name_host(ENode) of
                                    {_Name, "127.0.0.1"} -> LocalAddr;
+                                   {_Name, "::1"} -> LocalAddr;
                                    {_Name, H} -> H
                                end,
-                        list_to_binary(Host ++ ":" ++ integer_to_list(Port))
+                        list_to_binary(misc:maybe_add_brackets(Host) ++ ":" ++ integer_to_list(Port))
                 end, ENodes),
     {_, NodesToPositions0}
         = lists:foldl(fun (N, {Pos,Dict}) ->
@@ -737,7 +738,7 @@ create_bucket(BucketType, BucketName, NewConfig) ->
                 misc:update_proplist(new_bucket_default_params(BucketType),
                                      NewConfig),
             MergedConfig1 =
-                case cluster_compat_mode:is_cluster_spock() of
+                case cluster_compat_mode:is_cluster_50() of
                     true ->
                         generate_sasl_password(MergedConfig0);
                     false ->
@@ -838,7 +839,7 @@ update_bucket_props(BucketName, Props) ->
                                           fun ({K, _V} = Tuple, Acc) ->
                                                   [Tuple | lists:keydelete(K, 1, Acc)]
                                           end, OldProps, Props),
-                             case cluster_compat_mode:is_cluster_spock() of
+                             case cluster_compat_mode:is_cluster_50() of
                                  true ->
                                      NewProps;
                                  false ->
@@ -1033,7 +1034,7 @@ bucket_config_view_nodes(BucketConfig) ->
             []
     end.
 
-config_upgrade_to_spock(Config) ->
+config_upgrade_to_50(Config) ->
     Buckets = get_buckets(Config),
     NewBuckets =
         lists:map(

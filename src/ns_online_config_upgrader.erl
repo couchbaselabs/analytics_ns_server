@@ -54,8 +54,11 @@ do_upgrade_config(Config, FinalVersion) ->
         {value, ?VERSION_45} ->
             [{set, cluster_compat_version, ?VERSION_46}];
         {value, ?VERSION_46} ->
-            [{set, cluster_compat_version, ?SPOCK_VERSION_NUM} |
-             upgrade_config_from_4_6_to_spock(Config)]
+            [{set, cluster_compat_version, ?VERSION_50} |
+             upgrade_config_from_4_6_to_5_0(Config)];
+        {value, ?VERSION_50} ->
+            [{set, cluster_compat_version, ?VULCAN_VERSION_NUM} |
+             upgrade_config_from_5_0_to_vulcan(Config)]
     end.
 
 upgrade_config_from_3_0_to_4_0(Config) ->
@@ -90,7 +93,11 @@ create_service_maps(Config, Services) ->
                 S <- Services],
     [{set, {service_map, Service}, Map} || {Service, Map} <- Maps].
 
-upgrade_config_from_4_6_to_spock(Config) ->
-    ?log_info("Performing online config upgrade to Spock version"),
+upgrade_config_from_4_6_to_5_0(Config) ->
+    ?log_info("Performing online config upgrade to 5.0 version"),
     [{delete, roles_definitions} | menelaus_users:config_upgrade() ++
-         ns_bucket:config_upgrade_to_spock(Config)].
+         ns_bucket:config_upgrade_to_50(Config)].
+
+upgrade_config_from_5_0_to_vulcan(_Config) ->
+    ?log_info("Performing online config upgrade to Vulcan"),
+    query_settings_manager:config_upgrade_to_vulcan().

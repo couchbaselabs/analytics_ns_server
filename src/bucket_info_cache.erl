@@ -177,6 +177,9 @@ build_services(Node, Config, EnabledServices) ->
                          Port ->
                              [{ftsSSL, Port}]
                      end;
+             eventing ->
+                 [{eventingAdminPort,
+                   ns_config:search(Config, {node, Node, eventing_http_port}, undefined)}];
              cbas ->
                  [
                   {cbas, ns_config:search(Config, {node, Node, cbas_http_port}, undefined)},
@@ -198,6 +201,7 @@ build_services(Node, Config, EnabledServices) ->
 maybe_build_ext_hostname(Node) ->
     case misc:node_name_host(Node) of
         {_, "127.0.0.1"} -> [];
+        {_, "::1"} -> [];
         {_, H} -> [{hostname, list_to_binary(H)}]
     end.
 
@@ -233,8 +237,8 @@ compute_bucket_info_with_config(Bucket, Config, BucketConfig, BucketVC) ->
 
     NIs = lists:foldr(
             fun(Node, Acc) ->
-                    HostName = menelaus_web:build_node_hostname(Config, Node,
-                                                                ?LOCALHOST_MARKER_STRING),
+                    HostName = menelaus_web_node:build_node_hostname(Config, Node,
+                                                                     ?LOCALHOST_MARKER_STRING),
                     Info0 = [{hostname, list_to_binary(HostName)},
                              {ports, {build_ports(Node, Config)}}],
                     Info = case ns_bucket:bucket_type(BucketConfig) of

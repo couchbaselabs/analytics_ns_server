@@ -535,7 +535,7 @@ def make_os_tasks():
     programs = " ".join(["moxi", "memcached", "beam.smp",
                          "couch_compact", "godu", "sigar_port",
                          "cbq-engine", "indexer", "projector", "goxdcr",
-                         "cbft"])
+                         "cbft", "eventing-producer"])
 
     _tasks = [
         UnixTask("uname", "uname -a"),
@@ -572,11 +572,14 @@ def make_os_tasks():
         LinuxTask("Distro version", "cat /etc/SuSE-release"),
         LinuxTask("Distro version", "cat /etc/issue"),
         LinuxTask("Installed software", "rpm -qa"),
+        LinuxTask("Hot fix list", "rpm -V couchbase-server"),
         # NOTE: AFAIK columns _was_ necessary, but it doesn't appear to be
         # required anymore. I.e. dpkg -l correctly detects stdout as not a
         # tty and stops playing smart on formatting. Lets keep it for few
         # years and then drop, however.
         LinuxTask("Installed software", "COLUMNS=300 dpkg -l"),
+        # NOTE: -V is supported only from dpkg v1.17.2 onwards.
+        LinuxTask("Hot fix list", "COLUMNS=300 dpkg -V couchbase-server"),
         LinuxTask("Extended iostat", "iostat -x -p ALL 1 10 || iostat -x 1 10"),
         LinuxTask("Core dump settings", "find /proc/sys/kernel -type f -name '*core*' -print -exec cat '{}' ';'"),
         UnixTask("sysctl settings", "sysctl -a"),
@@ -585,6 +588,8 @@ def make_os_tasks():
         LinuxTask("LVM info", "lvdisplay"),
         LinuxTask("LVM info", "vgdisplay"),
         LinuxTask("LVM info", "pvdisplay"),
+        LinuxTask("Block device queue settings",
+                  "find /sys/block/*/queue -type f | xargs grep -vH xxxx | sort"),
         MacOSXTask("Process list snapshot", "top -l 1"),
         MacOSXTask("Disk activity", "iostat 1 10"),
         MacOSXTask("Process list",
@@ -716,7 +721,7 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
     viewdir = os.path.realpath(read_guts(guts, "idx_dir"))
 
     diag_url = "http://127.0.0.1:%s/diag?noLogs=1" % read_guts(guts, "rest_port")
-    if options.single_node_diag:
+    if not options.multi_node_diag:
         diag_url += "&oneNode=1"
 
 
@@ -870,8 +875,8 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                       "reports.log", "xdcr_trace.log", "http_access.log",
                       "http_access_internal.log", "ns_couchdb.log",
                       "goxdcr.log", "query.log", "projector.log", "indexer.log",
-                      "fts.log", "metakv.log", "json_rpc.log", "analytics.log",
-                      "analytics_cbas.log", "analytics_shutdown.log", "analytics_trace.json"]],
+                      "fts.log", "metakv.log", "json_rpc.log", "eventing.log",
+                      "analytics.log", "analytics_cbas.log", "analytics_shutdown.log", "analytics_trace.json"]],
 
         [make_cbstats_task(kind, memcached_pass, guts)
          for kind in ["all", "allocator", "checkpoint", "config",
@@ -914,6 +919,17 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                    log_file = "couchstore_local.log")
         for bucket in set(correct_split(read_guts(guts, "buckets"), ",")) - set(correct_split(read_guts(guts, "memcached_buckets"), ","))
         for path in glob.glob(os.path.join(dbdir, bucket, "*.couch.*"))],
+
+        # RocksDB has logs per DB (i.e. vBucket). 'LOG' is the most
+        # recent file, with old files named LOG.old.<timestamp>.
+        # Sort so we go from oldest -> newest as per other log files.
+        [AllOsTask("RocksDB Log file (%s, %s)" % (bucket, os.path.basename(path)),
+                   "cat '%s'" % (log_file),
+                   log_file="kv_rocks.log")
+        for bucket in (set(correct_split(read_guts(guts, "buckets"), ",")) -
+                       set(correct_split(read_guts(guts, "memcached_buckets"), ",")))
+        for path in glob.glob(os.path.join(dbdir, bucket, "rocksdb.*"))
+        for log_file in sorted(glob.glob(os.path.join(path, "LOG.old.*"))) + [os.path.join(path, "LOG")]],
 
         [UnixTask("moxi stats (port %s)" % port,
                   "echo stats proxy | nc 127.0.0.1 %s" % port,
@@ -1163,9 +1179,9 @@ def main():
                       action="store_true", default=False,
                       help=optparse.SUPPRESS_HELP)
     parser.add_option("--initargs", dest="initargs", help="server 'initargs' path")
-    parser.add_option("--single-node-diag", dest="single_node_diag",
+    parser.add_option("--multi-node-diag", dest="multi_node_diag",
                       action="store_true", default=False,
-                      help="collect per-node diag on just this node (default is all reachable nodes)")
+                      help="collect per-node diag  on all reachable nodes (default is just this node)")
     parser.add_option("--just-upload-into", dest="just_upload_into",
                       help=optparse.SUPPRESS_HELP)
     parser.add_option("--upload-host", dest="upload_host",

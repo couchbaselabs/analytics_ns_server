@@ -84,6 +84,7 @@
 -define(FTS_LOG_FILENAME, "fts.log").
 -define(CBAS_LOG_FILENAME, "analytics.log").
 -define(JSON_RPC_LOG_FILENAME, "json_rpc.log").
+-define(EVENTING_LOG_FILENAME, "eventing.log").
 
 -define(NS_SERVER_LOGGER, ns_server).
 -define(COUCHDB_LOGGER, couchdb).
@@ -221,11 +222,12 @@
 -define(VERSION_41, [4, 1]).
 -define(VERSION_45, [4, 5]).
 -define(VERSION_46, [4, 6]).
+-define(VERSION_50, [5, 0]).
 
--define(SPOCK_VERSION_NUM, [5, 0]).
+-define(VULCAN_VERSION_NUM, [5, 1]).
 
 %% Points to latest release
--define(LATEST_VERSION_NUM, ?SPOCK_VERSION_NUM).
+-define(LATEST_VERSION_NUM, ?VULCAN_VERSION_NUM).
 
 -define(DEFAULT_UI_COMPAT_VERSION, ?VERSION_45).
 

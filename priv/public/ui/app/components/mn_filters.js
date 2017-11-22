@@ -548,6 +548,7 @@
         case 'n1ql': return 'Query';
         case 'index': return 'Index';
         case 'fts': return 'Full Text';
+        case 'eventing': return 'Eventing';
         case 'cbas': return 'Analytics';
       }
     }
@@ -570,9 +571,7 @@
       if (full && a[2]) {
         suffix = '-' + a[2];
       }
-      // for DP4, hardcode the pretty version
-      // return [a[3], "Edition", a[0], "build",  a[1] + suffix].join(' ');
-      return ["Analytics Developer Preview 4", "build",  a[1] + suffix].join(' ');
+      return [a[3], "Edition", a[0], "build",  a[1] + suffix].join(' ');
     };
   }
   function encodeURIComponentFilter() {

@@ -1,0 +1,100 @@
+<div class="page-wrap">
+  <!-- <div -->
+  <!--    ng-if="rbac.cluster.settings.read" -->
+  <!--    mn-launchpad -->
+  <!--    launchpad-source="adminCtl.launchpadSource" -->
+  <!--    launchpad-id="adminCtl.launchpadId"></div> -->
+  <!-- <div -->
+  <!--    ui-view="lostConnection"> -->
+  <!-- </div> -->
+
+  <div class="row">
+    <nav class="nav-header">
+      <a (click)="toggleProgressBar()"
+         class="activities"
+         *ngIf="(tasksReadPermission | async)">
+        Activity
+        <span
+           [hidden]="!(tasksToDisplay| async)?.length > 0"
+           class="label badge">
+          {{(tasksToDisplay| async)?.length}}
+        </span>
+      </a>
+      <div
+         class="relative inline"
+         *ngIf="(tasksReadPermission | async)">
+        <div
+           class="tasks-progress dialog-small enable-ng-animation"
+           mnDraggable
+           [baseCornerRight]="true"
+           *ngIf="!(isProgressBarClosed | async)">
+          <div class="close-tasks">
+            <span (click)="toggleProgressBar()">X</span>
+          </div>
+          <div class="panel-content">
+            <div
+               class="text-small margin-bottom-1"
+               [hidden]="(tasksToDisplay | async)?.length">
+              No active processes to display
+            </div>
+            <div *ngFor="let task of tasksToDisplay | async">
+              <div class="text-small text-left">
+                {{task | mnFormatProgressMessage}}
+                <span [hidden]="!task.progress">{{(task.progress | number: '1.0-1') + '%'}}</span>
+              </div>
+              <div
+                 class="bar-wrapper"
+                 [hidden]="task.type === 'loadingSampleBucket' || task.type === 'orphanBucket'">
+                <div
+                   class="bar positive"
+                   [ngStyle]="{'width': task.progress + '%'}">
+                  <div></div>
+                </div>
+                <div
+                   class="bar negative"
+                   [ngStyle]="{'width': (100 - task.progress) + '%'}">
+                  <div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <a
+         (click)="runInternalSettingsDialog();"
+         [hidden]="!(enableInternalSettings | async)">
+        Edit internal settings
+      </a>
+      <a href="https://developer.couchbase.com/documentation/server/{{majorMinorVersion | async}}/introduction/whats-new.html" target="_blank">
+        Documentation
+      </a>
+      <a href="{{(isEnterprise | async) ? 'http://support.couchbase.com' : 'http://www.couchbase.com/communities/'}}" target="cbforums">
+        Support
+      </a>
+      <span
+         ngbDropdown
+         placement="bottom-right"
+         class="dropdown">
+        <a ngbDropdownToggle class="nowrap ellipsis max-width-3">
+          {{whomiId | async}}
+          <span class="has-menu">&nbsp;</span>
+        </a>
+        <div
+           ngbDropdownMenu
+           class="dropdown-menu-select-like"
+           [style.right]="'auto'">
+          <a
+             [hidden]="!(enableResetButton | async)"
+             (click)="showResetPasswordDialog()">
+            Reset password
+          </a>
+          <a
+             (click)="onLogout()"
+             class="ellipsis max-width-4">
+            Sign out {{whomiId | async}}
+          </a>
+        </div>
+      </span>
+    </nav>
+  </div>
+</div>

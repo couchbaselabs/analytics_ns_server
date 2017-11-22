@@ -720,7 +720,7 @@ default_quota(Service, Memory, Max) ->
     end.
 
 do_default_quota(kv, Memory) ->
-    KvQuota = (Memory * 2) div 5,
+    KvQuota = (Memory * 7) div 20,
     {?MIN_BUCKET_QUOTA, KvQuota};
 do_default_quota(index, Memory) ->
     IndexQuota = (Memory * 3) div 5,
@@ -729,7 +729,7 @@ do_default_quota(fts, Memory) ->
     FTSQuota = min(Memory div 5, ?MAX_DEFAULT_FTS_QUOTA),
     {?MIN_FTS_QUOTA, FTSQuota};
 do_default_quota(cbas, Memory) ->
-    CBASQuota = (Memory * 2) div 3,
+    CBASQuota = (Memory * 7) div 13,
     {?MIN_CBAS_QUOTA, CBASQuota}.
 
 services_ranking() ->

@@ -163,6 +163,7 @@ create_ssl_proxy_spec(UpstreamPort, DownstreamPort, LocalMemcachedPort) ->
                   "-kernel", "error_logger", "false",
                   "-sasl", "sasl_error_logger", "false",
                   "-nouser",
+                  "-proto_dist", misc:get_proto_dist_type(),
                   "-run", "child_erlang", "child_start", "ns_ssl_proxy"],
 
     create_erl_node_spec(xdcr_proxy, Args, "NS_SSL_PROXY_ENV_ARGS", ErlangArgs).
@@ -179,6 +180,7 @@ create_erl_node_spec(Type, Args, EnvArgsVar, ErlangArgs) ->
                           "disk_sink_opts" -> true;
                           "ssl_ciphers" -> true;
                           "net_kernel_verbosity" -> true;
+                          "ipv6" -> true;
                           _ -> false
                       end],
     EnvArgs = Args ++ EnvArgsTail,
@@ -226,12 +228,8 @@ do_per_bucket_moxi_specs(Config) ->
                   undefined ->
                       Acc;
                   Port ->
-                      LittleZ =
-                          lists:flatten(
-                            io_lib:format(
-                              "url=http://127.0.0.1:~B/pools/default/"
-                              "bucketsStreaming/~s",
-                              [RestPort, BucketName])),
+                      Path = "/pools/default/bucketsStreaming/" ++ BucketName,
+                      LittleZ = misc:local_url(RestPort, Path, []),
                       BigZ =
                           lists:flatten(
                             io_lib:format(
@@ -277,6 +275,7 @@ do_dynamic_children(normal, Config) ->
      per_bucket_moxi_specs(Config),
      maybe_create_ssl_proxy_spec(Config),
      fts_spec(Config),
+     eventing_spec(Config),
      cbas_spec(Config),
      example_service_spec(Config)].
 
@@ -290,23 +289,24 @@ query_node_spec(Config) ->
         _ ->
             RestPort = misc:node_rest_port(Config, node()),
             Command = path_config:component_path(bin, "cbq-engine"),
-            DataStoreArg = "--datastore=http://127.0.0.1:" ++ integer_to_list(RestPort),
-            CnfgStoreArg = "--configstore=http://127.0.0.1:" ++ integer_to_list(RestPort),
+            DataStoreArg = "--datastore=" ++ misc:local_url(RestPort, []),
+            CnfgStoreArg = "--configstore=" ++ misc:local_url(RestPort, []),
             HttpArg = "--http=:" ++ integer_to_list(query_rest:get_query_port(Config, node())),
             EntArg = "--enterprise=" ++ atom_to_list(cluster_compat_mode:is_enterprise()),
+            Ipv6 = "--ipv6=" ++ atom_to_list(misc:is_ipv6()),
 
             HttpsArgs = case query_rest:get_ssl_query_port(Config, node()) of
                             undefined ->
                                 [];
                             Port ->
                                 ["--https=:" ++ integer_to_list(Port),
-                                 "--certfile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
-                                 "--keyfile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
+                                 "--certfile=" ++ ns_ssl_services_setup:memcached_cert_path(),
+                                 "--keyfile=" ++ ns_ssl_services_setup:memcached_key_path(),
                                  "--ssl_minimum_protocol=" ++
                                      atom_to_list(ns_ssl_services_setup:ssl_minimum_protocol())]
                         end,
             Spec = {'query', Command,
-                    [DataStoreArg, HttpArg, CnfgStoreArg, EntArg] ++ HttpsArgs,
+                    [DataStoreArg, HttpArg, CnfgStoreArg, EntArg, Ipv6] ++ HttpsArgs,
                     [via_goport, exit_status, stderr_to_stdout,
                      {env, build_go_env_vars(Config, 'cbq-engine') ++
                           build_tls_config_env_var(Config)},
@@ -340,10 +340,10 @@ kv_node_projector_spec(Config) ->
             LocalMemcachedPort = ns_config:search_node_prop(node(), Config, memcached, port),
             MinidumpDir = path_config:minidump_dir(),
 
-            Args = ["-kvaddrs=127.0.0.1:" ++ integer_to_list(LocalMemcachedPort),
+            Args = ["-kvaddrs=" ++ misc:local_url(LocalMemcachedPort, [no_scheme]),
                     "-adminport=:" ++ integer_to_list(ProjectorPort),
                     "-diagDir=" ++ MinidumpDir,
-                    "127.0.0.1:" ++ integer_to_list(RestPort)],
+                    misc:local_url(RestPort, [no_scheme])],
 
             Spec = {'projector', ProjectorCmd, Args,
                     [via_goport, exit_status, stderr_to_stdout,
@@ -437,13 +437,13 @@ index_node_spec(Config) ->
                                 [];
                             Port ->
                                 ["--httpsPort=" ++ integer_to_list(Port),
-                                 "--certFile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
-                                 "--keyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
+                                 "--certFile=" ++ ns_ssl_services_setup:memcached_cert_path(),
+                                 "--keyFile=" ++ ns_ssl_services_setup:memcached_key_path()]
                         end,
 
             Spec = {'indexer', IndexerCmd,
                     ["-vbuckets=" ++ integer_to_list(NumVBuckets),
-                     "-cluster=127.0.0.1:" ++ integer_to_list(RestPort),
+                     "-cluster=" ++ misc:local_url(RestPort, [no_scheme]),
                      "-adminPort=" ++ integer_to_list(AdminPort),
                      "-scanPort=" ++ integer_to_list(ScanPort),
                      "-httpPort=" ++ integer_to_list(HttpPort),
@@ -476,11 +476,7 @@ build_cbauth_env_vars(Config, RPCService) ->
     RestPort = misc:node_rest_port(Config, node()),
     User = mochiweb_util:quote_plus(ns_config_auth:get_user(special)),
     Password = mochiweb_util:quote_plus(ns_config_auth:get_password(special)),
-
-    URL0 = io_lib:format("http://~s:~s@127.0.0.1:~b/~s",
-                         [User, Password, RestPort, RPCService]),
-    URL = lists:flatten(URL0),
-
+    URL = misc:local_url(RestPort, atom_to_list(RPCService), [{user_info, {User, Password}}]),
     [{"CBAUTH_REVRPC_URL", URL}].
 
 saslauthd_port_spec(Config) ->
@@ -528,7 +524,7 @@ default_is_passwordless(Config) ->
 should_run_moxi(Config) ->
     ns_cluster_membership:should_run_service(Config, kv, node())
         andalso
-          ((not cluster_compat_mode:is_cluster_spock(Config)) orelse
+          ((not cluster_compat_mode:is_cluster_50(Config)) orelse
            default_is_passwordless(Config)).
 
 moxi_spec(Config) ->
@@ -548,8 +544,8 @@ do_moxi_spec() ->
              "downstream_conn_queue_timeout=200,"
              "downstream_timeout=5000,wait_queue_timeout=200",
              [port]},
-      "-z", {"url=http://127.0.0.1:~B/pools/default/saslBucketsStreaming?moxi=1",
-             [{misc, this_node_rest_port, []}]},
+      "-z", "url=" ++ misc:local_url(misc:this_node_rest_port(),
+                                     "/pools/default/saslBucketsStreaming?moxi=1", []),
       "-p", "0",
       "-Y", "y",
       "-O", "stderr",
@@ -605,14 +601,16 @@ fts_spec(Config) ->
             FTSIdxDir = filename:join(IdxDir, "@fts"),
             ok = misc:ensure_writable_dir(FTSIdxDir),
             {_, Host} = misc:node_name_host(node()),
-            BindHttp = io_lib:format("~s:~b,0.0.0.0:~b", [Host, FtRestPort, FtRestPort]),
+            BindHttp = io_lib:format("~s:~b,~s:~b", [misc:maybe_add_brackets(Host), FtRestPort,
+                                                     misc:inaddr_any([url]),
+                                                     FtRestPort]),
             BindHttps = case ns_config:search(Config, {node, node(), fts_ssl_port}, undefined) of
                             undefined ->
                                 [];
                             Port ->
                                 ["-bindHttps=:" ++ integer_to_list(Port),
-                                 "-tlsCertFile=" ++ ns_ssl_services_setup:ssl_cert_key_path(),
-                                 "-tlsKeyFile=" ++ ns_ssl_services_setup:ssl_cert_key_path()]
+                                 "-tlsCertFile=" ++ ns_ssl_services_setup:memcached_cert_path(),
+                                 "-tlsKeyFile=" ++ ns_ssl_services_setup:memcached_key_path()]
                         end,
             {ok, FTSMemoryQuota} = ns_storage_conf:get_memory_quota(Config, fts),
             MaxReplicasAllowed = case cluster_compat_mode:is_enterprise() of
@@ -630,6 +628,7 @@ fts_spec(Config) ->
                       "failoverAssignAllPrimaries=false," ++
                       "hideUI=true," ++
                       "cbaudit=" ++ atom_to_list(cluster_compat_mode:is_enterprise()) ++ "," ++
+                      "ipv6=" ++ atom_to_list(misc:is_ipv6()) ++ "," ++
                       "ftsMemoryQuota=" ++ integer_to_list(FTSMemoryQuota * 1024000) ++ "," ++
                       "maxReplicasAllowed=" ++ integer_to_list(MaxReplicasAllowed) ++ "," ++
                       "bucketTypesAllowed=" ++ BucketTypesAllowed,
@@ -637,7 +636,7 @@ fts_spec(Config) ->
                     [
                      "-cfg=metakv",
                      "-uuid=" ++ NodeUUID,
-                     "-server=http://127.0.0.1:" ++ integer_to_list(NsRestPort),
+                     "-server=" ++ misc:local_url(NsRestPort, []),
                      "-bindHttp=" ++ BindHttp,
                      "-dataDir=" ++ FTSIdxDir,
                      "-tags=feed,janitor,pindex,queryer,cbauth_service",
@@ -649,6 +648,37 @@ fts_spec(Config) ->
                      {log, ?FTS_LOG_FILENAME},
                      {env, build_go_env_vars(Config, fts) ++ build_tls_config_env_var(Config)}]},
             [Spec]
+    end.
+
+eventing_spec(Config) ->
+    Command = path_config:component_path(bin, "eventing-producer"),
+    NodeUUID = ns_config:search(Config, {node, node(), uuid}, false),
+
+    case Command =/= false andalso
+        NodeUUID =/= false andalso
+        ns_cluster_membership:should_run_service(Config, eventing, node()) of
+        true ->
+            EventingAdminPort = ns_config:search(Config, {node, node(), eventing_http_port}, 8095),
+            LocalMemcachedPort = ns_config:search_node_prop(node(), Config, memcached, port),
+            RestPort = misc:node_rest_port(Config, node()),
+
+            {ok, IdxDir} = ns_storage_conf:this_node_ixdir(),
+            EventingDir = filename:join(IdxDir, "@eventing"),
+
+            EventingAdminArg = "-adminport=" ++ integer_to_list(EventingAdminPort),
+            EventingDirArg = "-dir=" ++ EventingDir,
+            KVAddrArg = "-kvport=" ++ integer_to_list(LocalMemcachedPort),
+            RestArg = "-restport=" ++ integer_to_list(RestPort),
+            UUIDArg = "-uuid=" ++ binary_to_list(NodeUUID),
+
+            Spec = {eventing, Command,
+                [EventingAdminArg, EventingDirArg, KVAddrArg, RestArg, UUIDArg],
+                [via_goport, exit_status, stderr_to_stdout,
+                    {env, build_go_env_vars(Config, eventing)},
+                    {log, ?EVENTING_LOG_FILENAME}]},
+            [Spec];
+        false ->
+            []
     end.
 
 cbas_spec(Config) ->

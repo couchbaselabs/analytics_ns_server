@@ -216,7 +216,7 @@ do_handle_stats_section(Id, Req) ->
 %% Per-node stats match bucket stats with the addition of a 'hostname' key,
 %% stats specific to the node (obviously), and removal of any cross-node stats
 handle_bucket_node_stats(_PoolId, BucketName, HostName, Req) ->
-    case menelaus_web:find_node_hostname(HostName, Req) of
+    case menelaus_web_node:find_node_hostname(HostName, Req) of
         false ->
             menelaus_util:reply_not_found(Req);
         {ok, Node} ->
@@ -235,7 +235,7 @@ handle_bucket_node_stats(_PoolId, BucketName, HostName, Req) ->
     end.
 
 handle_stats_section_for_node(_PoolId, Id, HostName, Req) ->
-    case menelaus_web:find_node_hostname(HostName, Req) of
+    case menelaus_web_node:find_node_hostname(HostName, Req) of
         false ->
             menelaus_util:reply_not_found(Req);
         {ok, Node} ->
@@ -465,7 +465,8 @@ build_response_for_specific_stat(BucketName, StatName, Params, LocalAddr) ->
         get_samples_for_system_or_bucket_stat(BucketName, StatName, ClientTStamp, Window),
 
     Config = ns_config:get(),
-    Hostnames = [list_to_binary(menelaus_web:build_node_hostname(Config, N, LocalAddr)) || N <- Nodes],
+    Hostnames = [list_to_binary(menelaus_web_node:build_node_hostname(Config, N, LocalAddr)) ||
+                    N <- Nodes],
     Timestamps = [TS || {TS, _} <- hd(NodesSamples)],
     MainValues = [VS || {_, VS} <- hd(NodesSamples)],
 
@@ -1519,7 +1520,7 @@ do_couchbase_index_stats_descriptions(BucketId, IndexNodes) ->
                            {title, <<"data size">>},
                            {name, per_index_stat(Id, <<"data_size">>)},
                            {desc, <<"Actual data size consumed by the index">>}]},
-                 {struct, [{title, <<"total items remaining">>},
+                 {struct, [{title, <<"total mutations remaining">>},
                            {name, per_index_stat(Id, <<"num_docs_pending+queued">>)},
                            {desc, <<"Number of documents pending to be indexed">>}]},
                  {struct, [{title, <<"drain rate items/sec">>},
@@ -2498,7 +2499,7 @@ serve_aggregated_ui_stats(Req, Params) ->
     Nodes = case proplists:get_value("node", Params, all) of
                 all -> all;
                 XHost ->
-                    case menelaus_web:find_node_hostname(XHost, Req) of
+                    case menelaus_web_node:find_node_hostname(XHost, Req) of
                         {ok, N} -> [N];
                         _ ->
                             erlang:throw({web_exception, 404, "not found", []})
@@ -2618,7 +2619,7 @@ serve_specific_ui_stats(Req, StatName, Params) ->
 
     Config = ns_config:get(),
     LocalAddr = menelaus_util:local_addr(Req),
-    StringHostnames = [menelaus_web:build_node_hostname(Config, N, LocalAddr) || N <- Nodes],
+    StringHostnames = [menelaus_web_node:build_node_hostname(Config, N, LocalAddr) || N <- Nodes],
     StatKeys = [list_to_binary("@"++H) || H <- StringHostnames],
 
     Timestamps = [TS || {TS, _} <- hd(NodesSamples)],

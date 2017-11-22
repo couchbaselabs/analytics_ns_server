@@ -41,7 +41,9 @@
          %% rpc-ed to grab babysitter and couchdb processes
          grab_process_infos/0,
          %% rpc-ed to grab couchdb ets_tables
-         grab_all_ets_tables/0]).
+         grab_all_ets_tables/0,
+         %% rpc-ed to release big binary refc'd by rpc server
+         garbage_collect_rpc/0]).
 
 %% Read the manifest.xml file
 manifest() ->
@@ -201,13 +203,16 @@ task_status_all() ->
     local_tasks:all() ++ ns_couchdb_api:get_tasks().
 
 do_diag_per_node_binary() ->
+    do_diag_per_node_binary(remote).
+
+do_diag_per_node_binary(Remoteness) ->
     work_queue:submit_sync_work(
       diag_handler_worker,
       fun () ->
-              (catch collect_diag_per_node_binary(40000))
+              (catch collect_diag_per_node_binary(Remoteness, 40000))
       end).
 
-collect_diag_per_node_binary(Timeout) ->
+collect_diag_per_node_binary(Remoteness, Timeout) ->
     ReplyRef = make_ref(),
     Parent = self(),
     {ChildPid, ChildRef} =
@@ -231,7 +236,7 @@ collect_diag_per_node_binary(Timeout) ->
                     end),
 
                   try
-                      collect_diag_per_node_binary_body(Reply)
+                      collect_diag_per_node_binary_body(Remoteness, Reply)
                   catch
                       T:E ->
                           Reply(partial_results_reason,
@@ -276,7 +281,7 @@ collect_diag_per_node_binary_loop(ReplyRef, ChildRef, Results) ->
             Results
     end.
 
-collect_diag_per_node_binary_body(Reply) ->
+collect_diag_per_node_binary_body(Remoteness, Reply) ->
     ?log_debug("Start collecting diagnostic data"),
     ActiveBuckets = ns_memcached:active_buckets(),
     PersistentBuckets = [B || B <- ActiveBuckets, ns_bucket:is_persistent(B)],
@@ -296,7 +301,7 @@ collect_diag_per_node_binary_body(Reply) ->
     Reply(replication_docs, (catch xdc_rdoc_api:find_all_replication_docs(5000))),
     Reply(design_docs, [{Bucket, (catch capi_utils:full_live_ddocs(Bucket, 2000))} ||
                            Bucket <- PersistentBuckets]),
-    Reply(ets_tables, (catch grab_all_ets_tables())),
+    Reply(ets_tables, (catch grab_all_ets_tables(Remoteness))),
     Reply(couchdb_ets_tables, (catch grab_couchdb_ets_tables())),
     Reply(internal_settings, (catch menelaus_web_settings:build_kvs(internal))),
     Reply(logging, (catch ale:capture_logging_diagnostics())),
@@ -363,16 +368,21 @@ sanitize_remote_clusters_info(Content) ->
       end, Content).
 
 grab_all_ets_tables() ->
-    lists:flatmap(
-      fun (T) ->
-              InfoAndContent =
-                  try
-                      {ets:info(T), ets:tab2list(T)}
-                  catch
-                      _:_ -> failed
-                  end,
-              prepare_ets_table(T, InfoAndContent)
-      end, ets:all()).
+    grab_all_ets_tables(remote).
+
+grab_all_ets_tables(local) ->
+    grab_later;
+grab_all_ets_tables(remote) ->
+    lists:flatmap(fun grab_ets_table/1, ets:all()).
+
+grab_ets_table(T) ->
+    InfoAndContent =
+        try
+            {ets:info(T), ets:tab2list(T)}
+        catch
+            _:_ -> failed
+        end,
+    prepare_ets_table(T, InfoAndContent).
 
 diag_format_timestamp(EpochMilliseconds) ->
     SecondsRaw = trunc(EpochMilliseconds/1000),
@@ -391,6 +401,7 @@ diag_format_log_entry(Type, Code, Module, Node, TStamp, ShortText, Text) ->
                   [FormattedTStamp, Module, Code, Type, ShortText, Node, Text]).
 
 handle_diag(Req) ->
+    trace_memory("Starting to handle diag."),
     Params = Req:parse_qs(),
     MaybeContDisp = case proplists:get_value("mode", Params) of
                         "view" -> [];
@@ -402,13 +413,36 @@ handle_diag(Req) ->
         _ ->
             Resp = handle_just_diag(Req, MaybeContDisp),
             Resp:write_chunk(<<>>)
-    end.
+    end,
+    trace_memory("Finished handling diag.").
+
+garbage_collect_rpc() ->
+    garbage_collect(whereis(rex)).
 
 grab_per_node_diag(Nodes) ->
-    {Results0, BadNodes} = rpc:multicall(Nodes,
-                                         ?MODULE, do_diag_per_node_binary, [], 45000),
-    Results1 = lists:zip(lists:subtract(Nodes, BadNodes), Results0),
-    [{N, diag_failed} || N <- BadNodes] ++ Results1.
+    Remotes = lists:delete(node(), Nodes),
+    false = Nodes =:= Remotes,
+    grab_per_node_diag(Remotes, 45000).
+
+grab_per_node_diag(Remotes, Timeout) ->
+    GrabDiag =
+        fun (self) ->
+                async:run_with_timeout(fun () -> do_diag_per_node_binary(local) end, Timeout);
+            (remotes) ->
+                RV = rpc:multicall(Remotes, ?MODULE, do_diag_per_node_binary, [], Timeout),
+                rpc:eval_everywhere(Remotes, ?MODULE, garbage_collect_rpc, []),
+                RV
+        end,
+
+    {Results, BadNodes} =
+        case async:map(GrabDiag, [self, remotes]) of
+            [{ok, R}, {Res, BN}] ->
+                {[R | Res], BN};
+            [{error, timeout}, {Res, BN}] ->
+                {Res, [node() | BN]}
+        end,
+    ResultPairs = lists:zip(lists:subtract([node() | Remotes], BadNodes), Results),
+    [{N, diag_failed} || N <- BadNodes] ++ ResultPairs.
 
 handle_just_diag(Req, Extra) ->
     Resp = menelaus_util:reply_ok(Req, "text/plain; charset=utf-8", chunked, Extra),
@@ -442,7 +476,9 @@ handle_just_diag(Req, Extra) ->
     Buckets = lists:sort(fun (A,B) -> element(1, A) =< element(1, B) end,
                          ns_bucket:get_buckets()),
 
-    Infos = [["nodes_info = ~p", ns_cluster:sanitize_node_info(menelaus_web:build_nodes_info())],
+    Infos = [["nodes_info = ~p",
+              ns_cluster:sanitize_node_info(
+                menelaus_web_node:build_nodes_info(true, normal, unstable, misc:localhost()))],
              ["buckets = ~p", ns_config_log:sanitize(Buckets)]],
 
     [begin
@@ -461,6 +497,7 @@ handle_per_node_just_diag(_Resp, []) ->
 handle_per_node_just_diag(Resp, [{Node, DiagBinary} | Results]) ->
     erlang:garbage_collect(),
 
+    trace_memory("Processing diag info for node ~p", [Node]),
     Diag = case is_binary(DiagBinary) of
                true ->
                    try
@@ -474,6 +511,7 @@ handle_per_node_just_diag(Resp, [{Node, DiagBinary} | Results]) ->
                false ->
                    DiagBinary
            end,
+    trace_memory("Binary is unpacked for node ~p", [Node]),
     do_handle_per_node_just_diag(Resp, Node, Diag),
     handle_per_node_just_diag(Resp, Results).
 
@@ -509,6 +547,7 @@ write_processes(Resp, Node, Key, Processes) ->
 
 do_handle_per_node_processes(Resp, Node, PerNodeDiag) ->
     erlang:garbage_collect(),
+    trace_memory("Starting pretty printing processes for ~p", [Node]),
 
     Processes = proplists:get_value(processes, PerNodeDiag),
 
@@ -524,9 +563,11 @@ do_handle_per_node_processes(Resp, Node, PerNodeDiag) ->
     write_processes(Resp, Node, babysitter_processes, BabysitterProcesses),
     write_processes(Resp, Node, couchdb_processes, CouchdbProcesses),
 
+    trace_memory("Finished pretty printing processes for ~p", [Node]),
     do_handle_per_node_stats(Resp, Node, DiagNoProcesses).
 
 do_handle_per_node_stats(Resp, Node, PerNodeDiag)->
+    trace_memory("Starting pretty printing stats for ~p", [Node]),
     %% pre 3.0 versions return stats as part of per node diagnostics; since
     %% number of samples may be quite substantial to cause memory issues while
     %% pretty-printing all of them in a bulk, to play safe we have this code
@@ -558,9 +599,24 @@ do_handle_per_node_stats(Resp, Node, PerNodeDiag)->
       end),
 
     DiagNoStats = lists:keydelete(stats, 1, PerNodeDiag),
+    trace_memory("Finished pretty printing stats for ~p", [Node]),
     do_handle_per_node_ets_tables(Resp, Node, DiagNoStats).
 
 print_ets_table(Resp, Node, Key, Table, Info, Values) ->
+    trace_memory("Printing ets table ~p for node ~p", [Table, Node]),
+    misc:executing_on_new_process(
+      fun () ->
+              do_print_ets_table(Resp, Node, Key, Table, Info, Values)
+      end).
+
+do_print_ets_table(Resp, Node, Key, Table, [], grab_later) ->
+    case grab_ets_table(Table) of
+        [] ->
+            ok;
+        [{{Table, Info}, Values}] ->
+            do_print_ets_table(Resp, Node, Key, Table, Info, Values)
+    end;
+do_print_ets_table(Resp, Node, Key, Table, Info, Values) ->
     write_chunk_format(Resp, "per_node_~p(~p, ~p) =~n",
                        [Key, Node, Table]),
     case Info of
@@ -582,25 +638,25 @@ print_ets_table(Resp, Node, Key, Table, Info, Values) ->
     Resp:write_chunk(<<"\n">>).
 
 write_ets_tables(Resp, Node, Key, PerNodeDiag) ->
-    EtsTables0 = proplists:get_value(Key, PerNodeDiag, []),
-
-    EtsTables = case is_list(EtsTables0) of
-                    true ->
+    trace_memory("Starting pretty printing ets tables for ~p", [{Node, Key}]),
+    EtsTables = case proplists:get_value(Key, PerNodeDiag, []) of
+                    grab_later ->
+                        [{T, grab_later} || T <- ets:all()];
+                    EtsTables0 when is_list(EtsTables0) ->
                         EtsTables0;
-                    false ->
-                        [{'_', [EtsTables0]}]
+                    Other ->
+                        [{'_', [Other]}]
                 end,
+    erlang:garbage_collect(),
 
-    misc:executing_on_new_process(
-      fun () ->
-              lists:foreach(
-                fun ({{Table, Info}, Values}) ->
-                        print_ets_table(Resp, Node, Key, Table, Info, Values);
-                    ({Table, Values}) ->
-                        print_ets_table(Resp, Node, Key, Table, [], Values)
-                end, EtsTables)
-      end),
+    lists:foreach(
+      fun ({{Table, Info}, Values}) ->
+              print_ets_table(Resp, Node, Key, Table, Info, Values);
+          ({Table, Values}) ->
+              print_ets_table(Resp, Node, Key, Table, [], Values)
+      end, EtsTables),
 
+    trace_memory("Finished pretty printing ets tables for ~p", [{Node, Key}]),
     lists:keydelete(Key, 1, PerNodeDiag).
 
 do_handle_per_node_ets_tables(Resp, Node, PerNodeDiag) ->
@@ -635,7 +691,8 @@ do_handle_diag(Req, Extra) ->
             ?QUERY_LOG_FILENAME, ?PROJECTOR_LOG_FILENAME,
             ?GOXDCR_LOG_FILENAME, ?INDEXER_LOG_FILENAME,
             ?FTS_LOG_FILENAME, ?CBAS_LOG_FILENAME,
-            ?JSON_RPC_LOG_FILENAME],
+            ?JSON_RPC_LOG_FILENAME,
+            ?EVENTING_LOG_FILENAME],
 
     lists:foreach(fun (Log) ->
                           handle_log(Resp, Log)
@@ -951,6 +1008,14 @@ handle_diag_vbuckets(Req) ->
 handle_diag_get_password(Req) ->
     menelaus_util:ensure_local(Req),
     menelaus_util:reply_text(Req, ns_config_auth:get_password(special), 200).
+
+trace_memory(Format) ->
+    trace_memory(Format, []).
+
+trace_memory(Format, Params) ->
+    {memory, PMem} = erlang:process_info(self(), memory),
+    ?log_debug(Format ++ " Process Memory: ~p, Erlang Memory: ~p",
+               Params ++ [PMem, erlang:memory()]).
 
 -ifdef(EUNIT).
 

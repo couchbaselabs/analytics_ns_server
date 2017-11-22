@@ -13,7 +13,7 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
-%% @doc Web server for menelaus.
+%% @doc handlers for bucket related REST API's
 
 -module(menelaus_web_buckets).
 
@@ -51,7 +51,10 @@
          handle_set_ddoc_update_min_changes/4,
          handle_local_random_key/3,
          build_bucket_capabilities/1,
-         external_bucket_type/1]).
+         external_bucket_type/1,
+         maybe_cleanup_old_buckets/0,
+         serve_short_bucket_info/2,
+         serve_streaming_short_bucket_info/2]).
 
 -import(menelaus_util,
         [reply/2,
@@ -61,7 +64,8 @@
          reply_json/3,
          concat_url_path/1,
          bin_concat_path/1,
-         bin_concat_path/2]).
+         bin_concat_path/2,
+         handle_streaming/2]).
 
 -define(MAX_BUCKET_NAME_LEN, 100).
 
@@ -122,7 +126,7 @@ handle_bucket_info(_PoolId, Id, Req) ->
 build_bucket_node_infos(BucketName, BucketConfig, InfoLevel0, LocalAddr) ->
     {InfoLevel, Stability} = convert_info_level(InfoLevel0),
     %% Only list nodes this bucket is mapped to
-    F = menelaus_web:build_nodes_info_fun(false, InfoLevel, Stability, LocalAddr),
+    F = menelaus_web_node:build_nodes_info_fun(false, InfoLevel, Stability, LocalAddr),
     Nodes = proplists:get_value(servers, BucketConfig, []),
     %% NOTE: there's potential inconsistency here between BucketConfig
     %% and (potentially more up-to-date) vbuckets dict. Given that
@@ -201,7 +205,7 @@ build_auto_compaction_info(BucketConfig, couchstore) ->
             [{autoCompactionSettings, false}];
         _ ->
             [{autoCompactionSettings,
-              menelaus_web:build_bucket_auto_compaction_settings(ACSettings)}]
+              menelaus_web_autocompaction:build_bucket_settings(ACSettings)}]
     end;
 build_auto_compaction_info(_BucketConfig, ephemeral) ->
     [];
@@ -387,7 +391,7 @@ build_bucket_info(Id, BucketConfig, InfoLevel, LocalAddr, MayExposeAuth,
               | Suffix5]}.
 
 build_bucket_capabilities(BucketConfig) ->
-    MaybeXattr = case cluster_compat_mode:is_cluster_spock() of
+    MaybeXattr = case cluster_compat_mode:is_cluster_50() of
                      true ->
                          [xattr];
                      false ->
@@ -441,7 +445,9 @@ handle_sasl_buckets_streaming(_PoolId, Req) ->
                       fun ({Name, BucketInfo}) ->
                               BucketNodes =
                                   [begin
-                                       Hostname = list_to_binary(menelaus_web:build_node_hostname(Config, N, LocalAddr)),
+                                       Hostname =
+                                           list_to_binary(
+                                             menelaus_web_node:build_node_hostname(Config, N, LocalAddr)),
                                        DirectPort = ns_config:search_node_prop(N, Config, memcached, port),
                                        ProxyPort = ns_config:search_node_prop(N, Config, moxi, port),
                                        {struct, [{hostname, Hostname},
@@ -465,7 +471,7 @@ handle_sasl_buckets_streaming(_PoolId, Req) ->
                       end, SASLBuckets),
                 {just_write, {struct, [{buckets, List}]}}
         end,
-    menelaus_web:handle_streaming(F, Req, undefined).
+    handle_streaming(F, Req).
 
 handle_bucket_info_streaming(_PoolId, Id, Req) ->
     LocalAddr = menelaus_util:local_addr(Req),
@@ -486,7 +492,7 @@ handle_bucket_info_streaming(_PoolId, Id, Req) ->
                         exit(normal)
                 end
         end,
-    menelaus_web:handle_streaming(F, Req, undefined).
+    handle_streaming(F, Req).
 
 handle_bucket_delete(_PoolId, BucketId, Req) ->
     menelaus_web_rbac:assert_no_users_upgrade(),
@@ -620,6 +626,15 @@ handle_bucket_update_inner(BucketId, Req, Params, Limit) ->
                        end)
     end.
 
+maybe_cleanup_old_buckets() ->
+    case ns_config_auth:is_system_provisioned() of
+        true ->
+            ok;
+        false ->
+            true = ns_node_disco:nodes_wanted() =:= [node()],
+            ns_storage_conf:delete_unused_buckets_db_files()
+    end.
+
 create_bucket(Req, Name, Params) ->
     Ctx = init_bucket_validation_context(true, Name, false, false),
     do_bucket_create(Req, Name, Params, Ctx).
@@ -628,7 +643,7 @@ do_bucket_create(Req, Name, ParsedProps) ->
     BucketType = proplists:get_value(bucketType, ParsedProps),
     StorageMode = proplists:get_value(storage_mode, ParsedProps, undefined),
     BucketProps = extract_bucket_props(Name, ParsedProps),
-    menelaus_web:maybe_cleanup_old_buckets(),
+    maybe_cleanup_old_buckets(),
     case ns_orchestrator:create_bucket(BucketType, Name, BucketProps) of
         ok ->
             ns_audit:create_bucket(Req, Name, BucketType, BucketProps),
@@ -863,7 +878,7 @@ parse_bucket_params_without_warnings(Ctx, Params) ->
 basic_bucket_params_screening(#bv_ctx{bucket_config = false, new = false}, _Params) ->
     {[], [{name, <<"Bucket with given name doesn't exist">>}]};
 basic_bucket_params_screening(#bv_ctx{cluster_version = Version} = Ctx, Params) ->
-    case cluster_compat_mode:is_version_spock(Version) of
+    case cluster_compat_mode:is_version_50(Version) of
         true ->
             basic_bucket_params_screening_tail(Ctx, Params);
         false ->
@@ -912,7 +927,7 @@ validate_common_params(#bv_ctx{bucket_name = BucketName,
      parse_validate_other_buckets_ram_quota(Params)].
 
 validate_version_specific_params(#bv_ctx{cluster_version = Version} = Ctx, Params) ->
-    case cluster_compat_mode:is_version_spock(Version) of
+    case cluster_compat_mode:is_version_50(Version) of
         true ->
             [validate_moxi_port(Ctx, Params)];
         false ->
@@ -1072,11 +1087,11 @@ validate_bucket_purge_interval(Params, BucketConfig, false = IsNew) ->
 parse_validate_bucket_purge_interval(Params, "couchbase", IsNew) ->
     parse_validate_bucket_purge_interval(Params, "membase", IsNew);
 parse_validate_bucket_purge_interval(Params, "membase", _IsNew) ->
-    case menelaus_web:parse_validate_boolean_field("autoCompactionDefined", '_', Params) of
+    case menelaus_util:parse_validate_boolean_field("autoCompactionDefined", '_', Params) of
         [] -> [];
         [{error, _F, _V}] = Error -> Error;
         [{ok, _, false}] -> [{ok, purge_interval, undefined}];
-        [{ok, _, true}] -> menelaus_web:parse_validate_purge_interval(Params)
+        [{ok, _, true}] -> menelaus_web_autocompaction:parse_validate_purge_interval(Params)
     end;
 parse_validate_bucket_purge_interval(Params, "ephemeral", IsNew) ->
     case proplists:is_defined("autoCompactionDefined", Params) of
@@ -1084,7 +1099,7 @@ parse_validate_bucket_purge_interval(Params, "ephemeral", IsNew) ->
             [{error, autoCompactionDefined,
               <<"autoCompactionDefined must not be set for ephemeral buckets">>}];
         false ->
-            Val = menelaus_web:parse_validate_purge_interval(Params),
+            Val = menelaus_web_autocompaction:parse_validate_purge_interval(Params),
             case Val =:= [] andalso IsNew =:= true of
                 true ->
                     [{ok, purge_interval, ?DEFAULT_EPHEMERAL_PURGE_INTERVAL_DAYS}];
@@ -1106,12 +1121,12 @@ validate_bucket_auto_compaction_settings(Params) ->
     end.
 
 parse_validate_bucket_auto_compaction_settings(Params) ->
-    case menelaus_web:parse_validate_boolean_field("autoCompactionDefined", '_', Params) of
+    case menelaus_util:parse_validate_boolean_field("autoCompactionDefined", '_', Params) of
         [] -> nothing;
         [{error, F, V}] -> {errors, [{F, V}]};
         [{ok, _, false}] -> false;
         [{ok, _, true}] ->
-            case menelaus_web:parse_validate_auto_compaction_settings(Params, false) of
+            case menelaus_web_autocompaction:parse_validate_settings(Params, false) of
                 {ok, AllFields, _} ->
                     {ok, AllFields};
                 Error ->
@@ -1148,12 +1163,12 @@ get_storage_mode(Params, _BucketConfig, true = _IsNew) ->
         "couchbase" ->
             {ok, storage_mode, couchstore};
         "ephemeral" ->
-            case cluster_compat_mode:is_cluster_spock() of
+            case cluster_compat_mode:is_cluster_50() of
                 true ->
                     {ok, storage_mode, ephemeral};
                 false ->
                     {error, bucketType,
-                     <<"Bucket type 'ephemeral' is supported only in spock">>}
+                     <<"Bucket type 'ephemeral' is supported only in 5.0">>}
             end
     end;
 get_storage_mode(_Params, BucketConfig, false = _IsNew)->
@@ -1786,6 +1801,26 @@ convert_info_level(streaming) ->
     {normal, stable};
 convert_info_level(InfoLevel) ->
     {InfoLevel, unstable}.
+
+build_terse_bucket_info(BucketName) ->
+    case bucket_info_cache:terse_bucket_info(BucketName) of
+        {ok, V} -> V;
+        %% NOTE: {auth_bucket for this route handles 404 for us albeit
+        %% harmlessly racefully
+        {T, E, Stack} ->
+            erlang:raise(T, E, Stack)
+    end.
+
+serve_short_bucket_info(BucketName, Req) ->
+    V = build_terse_bucket_info(BucketName),
+    menelaus_util:reply_ok(Req, "application/json", V).
+
+serve_streaming_short_bucket_info(BucketName, Req) ->
+    handle_streaming(
+      fun (_, _) ->
+              V = build_terse_bucket_info(BucketName),
+              {just_write, {write, V}}
+      end, Req).
 
 -ifdef(EUNIT).
 
