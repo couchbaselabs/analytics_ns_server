@@ -369,8 +369,9 @@ create_goxdcr_spec(Config, Cmd, Upgrade) ->
     XdcrRestPort = "-xdcrRestPort=" ++
         integer_to_list(ns_config:search(Config, {node, node(), xdcr_rest_port}, 9998)),
     IsEnterprise = "-isEnterprise=" ++ atom_to_list(cluster_compat_mode:is_enterprise()),
+    IsIpv6 = "-ipv6=" ++ atom_to_list(misc:is_ipv6()),
 
-    Args0 = [AdminPort, XdcrRestPort, IsEnterprise],
+    Args0 = [AdminPort, XdcrRestPort, IsEnterprise, IsIpv6],
 
     Args1 = case Upgrade of
                 true ->
@@ -453,6 +454,7 @@ index_node_spec(Config) ->
                      "-storageDir=" ++ IdxDir2,
                      "-diagDir=" ++ MinidumpDir,
                      "-nodeUUID=" ++ NodeUUID,
+                     "-ipv6=" ++ atom_to_list(misc:is_ipv6()),
                      "-isEnterprise=" ++ atom_to_list(cluster_compat_mode:is_enterprise())] ++ AddSM ++ HttpsArgs,
                     [via_goport, exit_status, stderr_to_stdout,
                      {log, ?INDEXER_LOG_FILENAME},
@@ -671,11 +673,21 @@ eventing_spec(Config) ->
             RestArg = "-restport=" ++ integer_to_list(RestPort),
             UUIDArg = "-uuid=" ++ binary_to_list(NodeUUID),
 
+            BindHttps =
+                case ns_config:search(Config, {node, node(), eventing_https_port}, undefined) of
+                    undefined ->
+                        [];
+                    Port ->
+                        ["-adminsslport=" ++ integer_to_list(Port),
+                         "-certfile=" ++ ns_ssl_services_setup:memcached_cert_path(),
+                         "-keyfile=" ++ ns_ssl_services_setup:memcached_key_path()]
+                end,
+
             Spec = {eventing, Command,
-                [EventingAdminArg, EventingDirArg, KVAddrArg, RestArg, UUIDArg],
-                [via_goport, exit_status, stderr_to_stdout,
-                    {env, build_go_env_vars(Config, eventing)},
-                    {log, ?EVENTING_LOG_FILENAME}]},
+                    [EventingAdminArg, EventingDirArg, KVAddrArg, RestArg, UUIDArg] ++ BindHttps,
+                    [via_goport, exit_status, stderr_to_stdout,
+                     {env, build_go_env_vars(Config, eventing) ++ build_tls_config_env_var(Config)},
+                     {log, ?EVENTING_LOG_FILENAME}]},
             [Spec];
         false ->
             []

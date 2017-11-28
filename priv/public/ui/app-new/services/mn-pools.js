@@ -5,40 +5,46 @@ mn.services.MnPools = (function () {
 
   var launchID =  (new Date()).valueOf() + '-' + ((Math.random() * 65536) >> 0);
 
-  var MnPools =
-      ng.core.Injectable()
-      .Class({
-        constructor: [
-          ng.common.http.HttpClient,
-          mn.pipes.MnParseVersion,
-          function MnPoolsService(http, mnParseVersionPipe) {
-            this.http = http;
-            this.stream = {};
-            this.stream.getSuccess =
-              this.get()
-              .filter(function (rv) {
-                return !(rv instanceof ng.common.http.HttpErrorResponse);
-              })
-              .publishReplay(1)
-              .refCount();
+  MnPoolsService.annotations = [
+    new ng.core.Injectable()
+  ];
 
-            this.stream.isEnterprise =
-              this.stream
-              .getSuccess
-              .pluck("isEnterprise");
+  MnPoolsService.parameters = [
+    ng.common.http.HttpClient,
+    mn.pipes.MnParseVersion
+  ];
 
-            this.stream.majorMinorVersion =
-              this.stream.getSuccess
-              .pluck("implementationVersion")
-              .map(mnParseVersionPipe.transform.bind(mnParseVersionPipe))
-              .map(function (rv) {
-                return rv[0].split('.').splice(0,2).join('.');
-              });
-          }],
-        get: get,
+  MnPoolsService.prototype.get = get;
+
+  return MnPoolsService;
+
+  function MnPoolsService(http, mnParseVersionPipe) {
+    this.http = http;
+    this.stream = {};
+
+    this.stream.getSuccess =
+      (new Rx.BehaviorSubject())
+      .switchMap(this.get.bind(this))
+      .shareReplay(1);
+
+    this.stream.isEnterprise =
+      this.stream
+      .getSuccess
+      .pluck("isEnterprise");
+
+    this.stream.implementationVersion =
+      this.stream
+      .getSuccess
+      .pluck("implementationVersion");
+
+    this.stream.majorMinorVersion =
+      this.stream
+      .implementationVersion
+      .map(mnParseVersionPipe.transform.bind(mnParseVersionPipe))
+      .map(function (rv) {
+        return rv[0].split('.').splice(0,2).join('.');
       });
-
-  return MnPools;
+  }
 
   function get(mnHttpParams) {
     return this.http
@@ -46,8 +52,6 @@ mn.services.MnPools = (function () {
         pools.isInitialized = !!pools.pools.length;
         pools.launchID = pools.uuid + '-' + launchID;
         return pools;
-      }).catch(function (resp) {
-        return Rx.Observable.of(resp);
       });
   }
 })();
