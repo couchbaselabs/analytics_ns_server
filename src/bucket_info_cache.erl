@@ -185,6 +185,7 @@ build_services(Node, Config, EnabledServices) ->
                              [];
                          Port ->
                              [{eventingSSL, Port}]
+                     end;
              cbas ->
                  [
                   {cbas, ns_config:search(Config, {node, Node, cbas_http_port}, undefined)},
