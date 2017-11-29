@@ -433,7 +433,6 @@ func (p *port) terminateChild() error {
 			return err
 		}
 	} else {
-		log.Print("killing (-9) child...")
 		err := Kill(p.child)
 		if err != nil {
 			return err
@@ -776,7 +775,6 @@ func (p *port) loop() error {
 			if status == 0 {
 				return nil
 			}
-			log.Printf("child exited with status %v", status)
 			return childExitedError(status)
 		case data, ok := <-p.getChildStream(stdout):
 			err := p.handleChildRead(stdout, data, ok)

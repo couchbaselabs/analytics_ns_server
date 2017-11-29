@@ -1,7 +1,5 @@
 *.beam
 *.tar.gz
-*.iml
-.idea/
 *~
 .DS_Store
 .configuration
@@ -56,3 +54,5 @@ priv/isasl.pw
 test/log
 tmp
 .rebar/
+*.iml
+.idea/

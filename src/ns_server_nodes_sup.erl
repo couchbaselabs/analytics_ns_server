@@ -80,7 +80,7 @@ child_specs() ->
       permanent, 1000, worker, []},
 
      {setup_dirs,
-      {ns_storage_conf, setup_db_and_ix_paths, []},
+      {ns_storage_conf, setup_db_ix_cbas_paths, []},
       transient, brutal_kill, worker, []},
 
      {ns_server_sup, {ns_server_sup, start_link, []},

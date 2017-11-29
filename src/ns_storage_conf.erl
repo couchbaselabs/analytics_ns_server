@@ -31,7 +31,7 @@
          this_node_bucket_dbdir/1,
          delete_unused_buckets_db_files/0,
          delete_old_2i_indexes/0,
-         setup_db_and_ix_paths/0]).
+         setup_db_ix_cbas_paths/0]).
 
 -export([cluster_storage_info/0, nodes_storage_info/1]).
 
@@ -45,24 +45,24 @@
 -export([set_quotas/2]).
 -export([default_quotas/1, default_quotas/2]).
 
-setup_db_and_ix_paths() ->
-    setup_db_and_ix_paths(ns_couchdb_api:get_db_and_ix_paths()),
+setup_db_ix_cbas_paths() ->
+    setup_db_ix_cbas_paths(ns_couchdb_api:get_db_ix_cbas_paths()),
     ignore.
 
-setup_db_and_ix_paths(Dirs) ->
-    ?log_debug("Initialize db_and_ix_paths variable with ~p", [Dirs]),
-    application:set_env(ns_server, db_and_ix_paths, Dirs).
+setup_db_ix_cbas_paths(Dirs) ->
+    ?log_debug("Initialize db_ix_cbas_paths variable with ~p", [Dirs]),
+    application:set_env(ns_server, db_ix_cbas_paths, Dirs).
 
-get_db_and_ix_paths() ->
-    case application:get_env(ns_server, db_and_ix_paths) of
+get_db_ix_cbas_paths() ->
+    case application:get_env(ns_server, db_ix_cbas_paths) of
         undefined ->
-            ns_couchdb_api:get_db_and_ix_paths();
+            ns_couchdb_api:get_db_ix_cbas_paths();
         {ok, Paths} ->
             Paths
     end.
 
 couch_storage_path(Field) ->
-    try get_db_and_ix_paths() of
+    try get_db_ix_cbas_paths() of
         PList ->
             {Field, RV} = lists:keyfind(Field, 1, PList),
             {ok, RV}
@@ -121,7 +121,7 @@ read_path_from_conf(Config, Node, Key, SubKey) ->
 setup_disk_storage_conf(DbPath, IxPath, CbasPath) ->
     [{cbas_path, CurrentCbasDir},
      {db_path, CurrentDbDir},
-     {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_and_ix_paths()),
+     {index_path, CurrentIxDir}] = lists:sort(ns_couchdb_api:get_db_ix_cbas_paths()),
 
     NewDbDir = misc:absname(DbPath),
     NewIxDir = misc:absname(IxPath),
@@ -154,8 +154,8 @@ setup_disk_storage_conf(DbPath, IxPath, CbasPath) ->
 
                     case RV of
                         ok ->
-                            ns_couchdb_api:set_db_and_ix_paths(NewDbDir, NewIxDir, NewCbasDir),
-                            setup_db_and_ix_paths([{db_path, NewDbDir},
+                            ns_couchdb_api:set_db_ix_cbas_paths(NewDbDir, NewIxDir, NewCbasDir),
+                            setup_db_ix_cbas_paths([{db_path, NewDbDir},
                                                    {index_path, NewIxDir},
                                                    {cbas_path, NewCbasDir}]);
                         _ ->
@@ -197,7 +197,7 @@ resolve_paths(Paths) ->
         [RealPath] end, Paths).
 
 query_storage_conf() ->
-    StorageConf = get_db_and_ix_paths(),
+    StorageConf = get_db_ix_cbas_paths(),
     lists:map(
       fun ({Key, Path}) ->
         case Key =:= cbas_path of

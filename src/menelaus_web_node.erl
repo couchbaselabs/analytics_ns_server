@@ -506,13 +506,13 @@ handle_node_settings_post(Node, Req) when is_atom(Node) ->
 
     Results0 = lists:usort(lists:map(ValidatePath, [{path, DbPath},
                                                     {index_path, IxPath},
-						    {cbas_path, CbasPath}])),
+                                                    {cbas_path, CbasPath}])),
     Results1 =
         case Results0 of
             [ok] ->
                 case ns_storage_conf:setup_disk_storage_conf(DbPath, IxPath, CbasPath) of
                     ok ->
-                        ns_audit:disk_storage_conf(Req, Node, DbPath, IxPath),
+                        ns_audit:disk_storage_conf(Req, Node, DbPath, IxPath, CbasPath),
                         %% NOTE: due to required restart we need to protect
                         %% ourselves from 'death signal' of parent
                         erlang:process_flag(trap_exit, true),
