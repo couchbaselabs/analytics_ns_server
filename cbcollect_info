@@ -230,6 +230,7 @@ class Task(object):
                 # message
                 if timer_fired.isSet():
                     print >> fp, "`%s` timed out after %s seconds" % (self.command, self.timeout)
+                    log("[Command timed out after %s seconds] - " % (self.timeout), new_line=False)
 
         return p.wait()
 
@@ -613,7 +614,7 @@ def make_os_tasks():
         WindowsTask("Network status", "netstat -anotb"),
         AllOsTask("Network routing table", "netstat -rn"),
         LinuxTask("Network socket statistics", "ss -an"),
-        LinuxTask("Extended socket statistics", "ss -an --info --processes"),
+        LinuxTask("Extended socket statistics", "ss -an --info --processes", timeout=300),
         UnixTask("Arp cache", "arp -na"),
         LinuxTask("Iptables dump", "iptables-save"),
         UnixTask("Raw /etc/hosts", "cat /etc/hosts"),
@@ -937,7 +938,7 @@ def make_product_task(guts, initargs_path, memcached_pass, options):
                   timeout=60)
          for port in correct_split(read_guts(guts, "moxi_ports"), ",")],
 
-        [AllOsTask("mctimings",
+        [AllOsTask("mctimings %s" % stat,
                    ["mctimings",
                     "-u", read_guts(guts, "memcached_admin"),
                     "-h", "127.0.0.1:%s" % read_guts(guts, "memcached_port"),

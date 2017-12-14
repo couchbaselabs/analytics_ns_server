@@ -12,14 +12,23 @@ mn.modules.MnWizard =
 
     MnWizardComponent.parameters = [
       mn.services.MnWizard,
-      mn.services.MnPools
+      mn.services.MnPools,
+      mn.services.MnAdmin
     ];
 
-    function MnWizardComponent(mnWizardService, mnPoolsService) {
+    function MnWizardComponent(mnWizardService, mnPoolsService, mnAdminService) {
       var newClusterConfig =
           mnWizardService
           .wizardForm
           .newClusterConfig;
+
+      mnAdminService
+        .stream
+        .implementationVersion
+        .first()
+        .subscribe(function (implementationVersion) {
+          mnWizardService.initialValues.implementationVersion = implementationVersion;
+        });
 
       mnWizardService
         .stream
@@ -31,13 +40,23 @@ mn.modules.MnWizard =
           newClusterConfig.get("services.field.kv").setValue(selfConfig.memoryQuota);
           newClusterConfig.get("services.field.index").setValue(selfConfig.indexMemoryQuota);
           newClusterConfig.get("services.field.fts").setValue(selfConfig.ftsMemoryQuota);
+          mnWizardService
+            .wizardForm
+            .joinCluster
+            .get("clusterStorage.hostname")
+            .setValue(hostname);
+
+          mnWizardService.initialValues.hostname = hostname;
         });
 
       mnPoolsService
         .stream
         .isEnterprise
         .subscribe(function (isEnterprise) {
-          newClusterConfig.get("storageMode").setValue(isEnterprise ? "plasma" : "forestdb");
+          var storageMode = isEnterprise ? "plasma" : "forestdb";
+          newClusterConfig.get("storageMode").setValue(storageMode);
+
+          mnWizardService.initialValues.storageMode = storageMode;
         });
 
       mnWizardService
@@ -46,6 +65,13 @@ mn.modules.MnWizard =
         .first()
         .subscribe(function (initHdd) {
           newClusterConfig.get("clusterStorage.storage").patchValue(initHdd);
+          mnWizardService
+            .wizardForm
+            .joinCluster
+            .get("clusterStorage.storage")
+            .patchValue(initHdd);
+
+          mnWizardService.initialValues.clusterStorage = initHdd;
         });
     }
 
@@ -59,7 +85,8 @@ mn.modules.MnWizard =
           mn.components.MnWelcome,
           mn.components.MnNodeStorageConfig,
           mn.components.MnServicesConfig,
-          mn.components.MnStorageMode
+          mn.components.MnStorageMode,
+          mn.components.MnJoinCluster
         ],
         imports: [
           ng.platformBrowser.BrowserModule,
@@ -78,6 +105,9 @@ mn.modules.MnWizard =
             }, {
               name: "app.wizard.newCluster",
               component: mn.components.MnNewCluster
+            }, {
+              name: "app.wizard.joinCluster",
+              component: mn.components.MnJoinCluster
             }, {
               name: "app.wizard.termsAndConditions",
               component: mn.components.MnTermsAndConditions

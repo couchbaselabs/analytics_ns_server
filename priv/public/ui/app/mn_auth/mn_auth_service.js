@@ -46,15 +46,19 @@
               return resp;
             }
           });
-        });
+        }).then(function (resp) {
+          localStorage.setItem("mnLogIn",
+                               Number(localStorage.getItem("mnLogIn") || "0") + 1);
+          return resp;
+        })
       });
     }
     function logout() {
+      $uibModalStack.dismissAll("uilogout");
       return $http({
         method: 'POST',
         url: "/uilogout"
       }).then(function () {
-        $uibModalStack.dismissAll("uilogout");
         mnPools.clearCache();
         $state.go('app.auth').then(function () {
           delete $rootScope.poolDefault;
